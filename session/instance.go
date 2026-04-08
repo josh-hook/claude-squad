@@ -612,45 +612,36 @@ func (i *Instance) SendPromptWhenReady(prompt string) error {
 	}
 
 	timeout := time.After(30 * time.Second)
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-timeout:
-			// Timed out waiting for readiness — send anyway as a last resort
 			log.WarningLog.Printf("timed out waiting for program readiness, sending prompt anyway")
 			return i.SendPrompt(prompt)
 		case <-ticker.C:
+			// Handle trust/approval prompts — if one was dismissed, skip this tick
+			// and wait for the screen to update before checking readiness.
+			if i.CheckAndHandleTrustPrompt() {
+				continue
+			}
+
 			content, err := i.tmuxSession.CapturePaneContent()
-			if err != nil {
+			if err != nil || len(strings.TrimSpace(content)) == 0 {
 				continue
 			}
 
-			// Handle trust prompts first
-			i.CheckAndHandleTrustPrompt()
-
-			// Check if the program has loaded (pane has meaningful content)
-			trimmed := strings.TrimSpace(content)
-			if len(trimmed) == 0 {
-				continue
-			}
-
-			// For Claude, wait until it shows the input area
+			// For Claude, wait until it shows the input area (not a trust/loading screen)
 			if strings.HasSuffix(i.Program, "claude") {
-				// Claude is ready when it's showing the input prompt (not loading)
 				if strings.Contains(content, "What would you like to do?") ||
-					strings.Contains(content, "Claude Code") ||
-					strings.Contains(content, ">") {
-					// Give it a brief moment to finish rendering
-					time.Sleep(500 * time.Millisecond)
+					strings.Contains(content, "Tips") {
 					return i.SendPrompt(prompt)
 				}
 				continue
 			}
 
-			// For other programs, just wait for any content and send
-			time.Sleep(500 * time.Millisecond)
+			// For other programs, any non-empty content means ready
 			return i.SendPrompt(prompt)
 		}
 	}
