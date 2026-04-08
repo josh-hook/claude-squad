@@ -113,6 +113,20 @@ func (rp *RepoPicker) visibleItems() []string {
 	return items
 }
 
+// SelectByName moves the cursor to the repo whose directory name matches the given name.
+// Returns true if a match was found.
+func (rp *RepoPicker) SelectByName(name string) bool {
+	lower := strings.ToLower(name)
+	for i, repo := range rp.repos {
+		if strings.ToLower(filepath.Base(repo)) == lower {
+			rp.cursor = i
+			rp.filter = "" // clear any filter so the item is visible
+			return true
+		}
+	}
+	return false
+}
+
 // GetSelectedRepo returns the selected repo path, or empty string if nothing is selected.
 func (rp *RepoPicker) GetSelectedRepo() string {
 	items := rp.visibleItems()

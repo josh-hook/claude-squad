@@ -347,6 +347,23 @@ func (t *TextInputOverlay) GetSelectedRepo() string {
 	return t.repoPicker.GetSelectedRepo()
 }
 
+// SetDefaultBranch sets a branch to auto-select in the branch picker.
+func (t *TextInputOverlay) SetDefaultBranch(branch string) {
+	if t.branchPicker == nil {
+		return
+	}
+	t.branchPicker.SetDefaultBranch(branch)
+}
+
+// SelectRepoByName selects a repo in the repo picker by directory name.
+// Returns true if a match was found.
+func (t *TextInputOverlay) SelectRepoByName(name string) bool {
+	if t.repoPicker == nil {
+		return false
+	}
+	return t.repoPicker.SelectByName(name)
+}
+
 // SetBranchResults updates the branch picker with search results.
 // version must match the picker's current filterVersion to be accepted.
 func (t *TextInputOverlay) SetBranchResults(branches []string, version uint64) {

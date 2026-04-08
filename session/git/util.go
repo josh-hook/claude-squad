@@ -48,6 +48,44 @@ func checkGHCLI() error {
 	return nil
 }
 
+// PRInfo holds information extracted from a GitHub PR URL.
+type PRInfo struct {
+	URL      string // the full PR URL
+	Owner    string
+	Repo     string
+	Number   string
+	Branch   string // head branch name, populated by GetPRBranch
+}
+
+// ParsePRURL extracts owner, repo, and PR number from a GitHub PR URL.
+// Returns nil if the text does not contain a valid PR URL.
+func ParsePRURL(text string) *PRInfo {
+	re := regexp.MustCompile(`https://github\.com/([^/]+)/([^/]+)/pull/(\d+)`)
+	match := re.FindStringSubmatch(text)
+	if match == nil {
+		return nil
+	}
+	return &PRInfo{
+		URL:    match[0],
+		Owner:  match[1],
+		Repo:   match[2],
+		Number: match[3],
+	}
+}
+
+// GetPRBranch fetches the head branch name for a GitHub PR using the gh CLI.
+func GetPRBranch(prURL string) (string, error) {
+	if err := checkGHCLI(); err != nil {
+		return "", err
+	}
+	cmd := exec.Command("gh", "pr", "view", prURL, "--json", "headRefName", "-q", ".headRefName")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get PR branch: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // IsGitRepo checks if the given path is within a git repository
 func IsGitRepo(path string) bool {
 	cmd := exec.Command("git", "-C", path, "rev-parse", "--show-toplevel")

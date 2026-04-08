@@ -19,7 +19,8 @@ type BranchPicker struct {
 	cursor        int      // index into visibleItems()
 	focused       bool
 	width         int
-	showNewBranch bool // whether to show the "New branch" option
+	showNewBranch bool   // whether to show the "New branch" option
+	defaultBranch string // if set, auto-select this branch when results arrive
 }
 
 // NewBranchPicker creates a new empty branch picker.
@@ -113,6 +114,9 @@ func (bp *BranchPicker) SetResults(branches []string, version uint64) {
 		}
 	}
 
+	// Try to apply default branch selection
+	bp.applyDefaultBranch()
+
 	// Clamp cursor
 	items := bp.visibleItems()
 	if bp.cursor >= len(items) {
@@ -132,6 +136,29 @@ func (bp *BranchPicker) visibleItems() []string {
 	}
 	items = append(items, bp.results...)
 	return items
+}
+
+// SetDefaultBranch sets a branch to be auto-selected when results arrive.
+// The user can still navigate away from it.
+func (bp *BranchPicker) SetDefaultBranch(branch string) {
+	bp.defaultBranch = branch
+	// If results are already loaded, try to select now
+	bp.applyDefaultBranch()
+}
+
+// applyDefaultBranch moves the cursor to the default branch if it exists in the visible items.
+func (bp *BranchPicker) applyDefaultBranch() {
+	if bp.defaultBranch == "" {
+		return
+	}
+	items := bp.visibleItems()
+	for i, item := range items {
+		if item == bp.defaultBranch {
+			bp.cursor = i
+			bp.showNewBranch = false
+			return
+		}
+	}
 }
 
 // GetSelectedBranch returns the selected branch name, or empty string for "New branch".

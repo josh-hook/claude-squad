@@ -87,6 +87,9 @@ type home struct {
 	// cwdIsGitRepo is true if the current working directory is inside a git repository.
 	cwdIsGitRepo bool
 
+	// lastDetectedPRURL tracks the last PR URL detected in the prompt to avoid re-fetching.
+	lastDetectedPRURL string
+
 	// -- UI Components --
 
 	// list displays the list of instances
@@ -293,6 +296,28 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case branchSearchResultMsg:
 		if m.textInputOverlay != nil {
 			m.textInputOverlay.SetBranchResults(msg.branches, msg.version)
+		}
+		return m, nil
+	case prBranchResultMsg:
+		if m.textInputOverlay != nil {
+			// Auto-select the repo by name if a repo picker is present
+			if msg.repoName != "" {
+				if m.textInputOverlay.SelectRepoByName(msg.repoName) {
+					// Trigger branch fetch for the newly selected repo
+					repo := m.textInputOverlay.GetSelectedRepo()
+					if repo != "" {
+						fetchCmd := func() tea.Msg {
+							git.FetchBranches(repo)
+							return nil
+						}
+						m.textInputOverlay.SetDefaultBranch(msg.branch)
+						searchCmd := m.runBranchSearch("", m.textInputOverlay.BranchFilterVersion())
+						return m, tea.Batch(fetchCmd, searchCmd)
+					}
+				}
+			}
+			// Set the default branch (will apply when results arrive)
+			m.textInputOverlay.SetDefaultBranch(msg.branch)
 		}
 		return m, nil
 	case tea.KeyMsg:
@@ -591,6 +616,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			filter := m.textInputOverlay.BranchFilter()
 			version := m.textInputOverlay.BranchFilterVersion()
 			return m, m.scheduleBranchSearch(filter, version)
+		}
+
+		// Check for GitHub PR URLs in the prompt text and auto-select branch/repo
+		if prCmd := m.detectPRURL(); prCmd != nil {
+			return m, prCmd
 		}
 
 		return m, nil
@@ -914,6 +944,12 @@ type branchSearchResultMsg struct {
 	version  uint64
 }
 
+// prBranchResultMsg carries the branch name extracted from a GitHub PR URL.
+type prBranchResultMsg struct {
+	repoName string
+	branch   string
+}
+
 const branchSearchDebounce = 150 * time.Millisecond
 
 // scheduleBranchSearch returns a debounced tea.Cmd: sleeps, then triggers a search message.
@@ -1037,7 +1073,37 @@ func (m *home) handleError(err error) tea.Cmd {
 	}
 }
 
+// detectPRURL checks the prompt text for a GitHub PR URL and triggers a background
+// fetch of the PR's branch name. Returns nil if no new PR URL was detected.
+func (m *home) detectPRURL() tea.Cmd {
+	if m.textInputOverlay == nil {
+		return nil
+	}
+	promptText := m.textInputOverlay.GetValue()
+	prInfo := git.ParsePRURL(promptText)
+	if prInfo == nil {
+		return nil
+	}
+	// Skip if we already processed this URL
+	if prInfo.URL == m.lastDetectedPRURL {
+		return nil
+	}
+	m.lastDetectedPRURL = prInfo.URL
+
+	prURL := prInfo.URL
+	repoName := prInfo.Repo
+	return func() tea.Msg {
+		branch, err := git.GetPRBranch(prURL)
+		if err != nil {
+			log.WarningLog.Printf("failed to get PR branch: %v", err)
+			return nil
+		}
+		return prBranchResultMsg{repoName: repoName, branch: branch}
+	}
+}
+
 func (m *home) newPromptOverlay() *overlay.TextInputOverlay {
+	m.lastDetectedPRURL = ""
 	if !m.cwdIsGitRepo {
 		return overlay.NewTextInputOverlayWithRepoAndBranchPicker(
 			"Enter prompt", "", m.appConfig.GetProfiles(), m.getAvailableRepos())
