@@ -162,10 +162,14 @@ type InstanceOptions struct {
 func NewInstance(opts InstanceOptions) (*Instance, error) {
 	t := time.Now()
 
-	// Convert path to absolute
-	absPath, err := filepath.Abs(opts.Path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get absolute path: %w", err)
+	// Convert path to absolute (empty path means repo will be set later via repo picker)
+	absPath := opts.Path
+	if absPath != "" {
+		var err error
+		absPath, err = filepath.Abs(opts.Path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get absolute path: %w", err)
+		}
 	}
 
 	return &Instance{
@@ -187,6 +191,14 @@ func (i *Instance) RepoName() (string, error) {
 		return "", fmt.Errorf("cannot get repo name for instance that has not been started")
 	}
 	return i.gitWorktree.GetRepoName(), nil
+}
+
+// GetRepoPath returns the repository path for the instance, or empty string if unavailable.
+func (i *Instance) GetRepoPath() string {
+	if i.gitWorktree == nil {
+		return ""
+	}
+	return i.gitWorktree.GetRepoPath()
 }
 
 func (i *Instance) SetStatus(status Status) {

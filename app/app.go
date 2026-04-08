@@ -83,6 +83,9 @@ type home struct {
 	// startingInstance holds a reference to the instance being started in the background.
 	startingInstance *session.Instance
 
+	// cwdIsGitRepo is true if the current working directory is inside a git repository.
+	cwdIsGitRepo bool
+
 	// -- UI Components --
 
 	// list displays the list of instances
@@ -117,6 +120,10 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		os.Exit(1)
 	}
 
+	// Check if CWD is inside a git repo (determines whether repo picker is needed)
+	currentDir, _ := os.Getwd()
+	cwdIsGitRepo := git.IsGitRepo(currentDir)
+
 	h := &home{
 		ctx:          ctx,
 		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot)),
@@ -129,6 +136,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		autoYes:      autoYes,
 		state:        stateDefault,
 		appState:     appState,
+		cwdIsGitRepo: cwdIsGitRepo,
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 
@@ -483,7 +491,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		// Use the new TextInputOverlay component to handle all key events
-		shouldClose, branchFilterChanged := m.textInputOverlay.HandleKeyPress(msg)
+		shouldClose, branchFilterChanged, repoChanged := m.textInputOverlay.HandleKeyPress(msg)
 
 		// Check if the form was submitted or canceled
 		if shouldClose {
@@ -500,8 +508,21 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				prompt := m.textInputOverlay.GetValue()
 				selectedBranch := m.textInputOverlay.GetSelectedBranch()
 				selectedProgram := m.textInputOverlay.GetSelectedProgram()
+				selectedRepo := m.textInputOverlay.GetSelectedRepo()
 
 				if !selected.Started() {
+					// Set the repo path from the picker if provided
+					if selectedRepo != "" {
+						if !git.IsGitRepo(selectedRepo) {
+							m.textInputOverlay = nil
+							m.state = stateDefault
+							m.menu.SetState(ui.StateDefault)
+							m.list.Kill()
+							return m, m.handleError(fmt.Errorf("not a git repository: %s", selectedRepo))
+						}
+						selected.Path = selectedRepo
+					}
+
 					// Shift+N flow: instance not started yet — set branch, start, then send prompt
 					if selectedBranch != "" {
 						selected.SetSelectedBranch(selectedBranch)
@@ -548,6 +569,20 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 					return nil
 				},
 			)
+		}
+
+		// When the repo selection changes, fetch branches for the new repo
+		if repoChanged {
+			repo := m.textInputOverlay.GetSelectedRepo()
+			if repo != "" && git.IsGitRepo(repo) {
+				fetchCmd := func() tea.Msg {
+					git.FetchBranches(repo)
+					return nil
+				}
+				searchCmd := m.runBranchSearch("", m.textInputOverlay.BranchFilterVersion())
+				return m, tea.Batch(fetchCmd, searchCmd)
+			}
+			return m, nil
 		}
 
 		// Schedule a debounced branch search if the filter changed
@@ -611,16 +646,25 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
 
-		// Start a background fetch so branches are up to date by the time the picker opens
-		fetchCmd := func() tea.Msg {
-			currentDir, _ := os.Getwd()
-			git.FetchBranches(currentDir)
-			return nil
+		// Only fetch branches in the background if CWD is a git repo
+		var fetchCmd tea.Cmd
+		if m.cwdIsGitRepo {
+			fetchCmd = func() tea.Msg {
+				currentDir, _ := os.Getwd()
+				git.FetchBranches(currentDir)
+				return nil
+			}
+		}
+
+		// Use CWD as path when in a git repo, empty string otherwise (set via repo picker)
+		instancePath := "."
+		if !m.cwdIsGitRepo {
+			instancePath = ""
 		}
 
 		instance, err := session.NewInstance(session.InstanceOptions{
 			Title:   "",
-			Path:    ".",
+			Path:    instancePath,
 			Program: m.program,
 		})
 		if err != nil {
@@ -639,9 +683,16 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
+
+		// Use CWD as path when in a git repo, empty string otherwise (set via repo picker)
+		instancePath := "."
+		if !m.cwdIsGitRepo {
+			instancePath = ""
+		}
+
 		instance, err := session.NewInstance(session.InstanceOptions{
 			Title:   "",
-			Path:    ".",
+			Path:    instancePath,
 			Program: m.program,
 		})
 		if err != nil {
@@ -652,6 +703,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
 		m.state = stateNew
 		m.menu.SetState(ui.StateNewInstance)
+
+		// When not in a git repo, force the prompt overlay flow so the repo picker appears
+		if !m.cwdIsGitRepo {
+			m.promptAfterName = true
+		}
 
 		return m, nil
 	case keys.KeyUp:
@@ -867,11 +923,23 @@ func (m *home) scheduleBranchSearch(filter string, version uint64) tea.Cmd {
 	}
 }
 
+// getActiveBranchSearchRepo returns the repo path to use for branch searches.
+// Prefers the repo selected in the overlay, falls back to CWD.
+func (m *home) getActiveBranchSearchRepo() string {
+	if m.textInputOverlay != nil {
+		if repo := m.textInputOverlay.GetSelectedRepo(); repo != "" {
+			return repo
+		}
+	}
+	dir, _ := os.Getwd()
+	return dir
+}
+
 // runBranchSearch returns a tea.Cmd that performs the git search in the background.
 func (m *home) runBranchSearch(filter string, version uint64) tea.Cmd {
+	repo := m.getActiveBranchSearchRepo()
 	return func() tea.Msg {
-		currentDir, _ := os.Getwd()
-		branches, err := git.SearchBranches(currentDir, filter)
+		branches, err := git.SearchBranches(repo, filter)
 		if err != nil {
 			log.WarningLog.Printf("branch search failed: %v", err)
 			return nil
@@ -969,7 +1037,25 @@ func (m *home) handleError(err error) tea.Cmd {
 }
 
 func (m *home) newPromptOverlay() *overlay.TextInputOverlay {
+	if !m.cwdIsGitRepo {
+		return overlay.NewTextInputOverlayWithRepoAndBranchPicker(
+			"Enter prompt", "", m.appConfig.GetProfiles(), m.getRecentRepos())
+	}
 	return overlay.NewTextInputOverlayWithBranchPicker("Enter prompt", "", m.appConfig.GetProfiles())
+}
+
+// getRecentRepos extracts unique repo paths from existing instances.
+func (m *home) getRecentRepos() []string {
+	seen := make(map[string]bool)
+	var repos []string
+	for _, inst := range m.list.GetInstances() {
+		repoPath := inst.GetRepoPath()
+		if repoPath != "" && !seen[repoPath] {
+			seen[repoPath] = true
+			repos = append(repos, repoPath)
+		}
+	}
+	return repos
 }
 
 // cancelPromptOverlay cancels the prompt overlay, cleaning up unstarted instances.
