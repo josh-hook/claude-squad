@@ -608,8 +608,8 @@ func (i *Instance) SendPrompt(prompt string) error {
 }
 
 // SendPromptWhenReady waits for the program to finish initializing, then sends the prompt.
-// It polls the tmux pane content looking for signs of readiness, handling trust prompts
-// along the way. This should be called from a background goroutine, not the UI loop.
+// It polls the tmux pane content, dismissing trust/approval prompts along the way, then
+// waits for the screen to stabilize before sending. Called from a background goroutine.
 func (i *Instance) SendPromptWhenReady(prompt string) error {
 	if !i.started || i.tmuxSession == nil {
 		return fmt.Errorf("instance not started")
@@ -619,14 +619,14 @@ func (i *Instance) SendPromptWhenReady(prompt string) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 
+	// Phase 1: Wait for the program to show something and dismiss any trust prompts.
+	// Once the pane has content and no trust prompts remain, move to phase 2.
 	for {
 		select {
 		case <-timeout:
 			log.WarningLog.Printf("timed out waiting for program readiness, sending prompt anyway")
 			return i.SendPrompt(prompt)
 		case <-ticker.C:
-			// Handle trust/approval prompts — if one was dismissed, skip this tick
-			// and wait for the screen to update before checking readiness.
 			if i.CheckAndHandleTrustPrompt() {
 				continue
 			}
@@ -636,16 +636,14 @@ func (i *Instance) SendPromptWhenReady(prompt string) error {
 				continue
 			}
 
-			// For Claude, wait until it shows the input area (not a trust/loading screen)
-			if strings.HasSuffix(i.Program, "claude") {
-				if strings.Contains(content, "What would you like to do?") ||
-					strings.Contains(content, "Tips") {
-					return i.SendPrompt(prompt)
-				}
-				continue
-			}
+			// Pane has content and no trust prompt — program is loaded.
+			// Brief pause for the UI to finish rendering, then send.
+			time.Sleep(500 * time.Millisecond)
 
-			// For other programs, any non-empty content means ready
+			// One final trust prompt check in case another appeared during the pause.
+			i.CheckAndHandleTrustPrompt()
+			time.Sleep(250 * time.Millisecond)
+
 			return i.SendPrompt(prompt)
 		}
 	}
