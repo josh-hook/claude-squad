@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1102,29 +1103,39 @@ func (m *home) handleError(err error) tea.Cmd {
 
 // showInstanceInfo displays a read-only overlay with the instance's original configuration.
 func (m *home) showInstanceInfo(inst *session.Instance) tea.Cmd {
+	labelStyle := lipgloss.NewStyle().Bold(true)
+	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Bold(true)
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
 	var content string
 
-	content += lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Bold(true).Render("Session Info") + "\n\n"
+	content += headerStyle.Render("Session Info") + "\n\n"
 
-	content += lipgloss.NewStyle().Bold(true).Render("Title: ") + inst.Title + "\n"
-	content += lipgloss.NewStyle().Bold(true).Render("Program: ") + inst.Program + "\n"
-	content += lipgloss.NewStyle().Bold(true).Render("Branch: ") + inst.Branch + "\n"
+	content += labelStyle.Render("Title: ") + inst.Title + "\n"
+	content += labelStyle.Render("Program: ") + inst.Program + "\n"
+	content += labelStyle.Render("Branch: ") + inst.Branch + "\n"
 
 	repoPath := inst.GetRepoPath()
 	if repoPath == "" {
 		repoPath = inst.Path
 	}
-	content += lipgloss.NewStyle().Bold(true).Render("Repository: ") + repoPath + "\n"
-	content += lipgloss.NewStyle().Bold(true).Render("Created: ") + inst.CreatedAt.Format("2006-01-02 15:04:05") + "\n"
+	content += labelStyle.Render("Repository: ") + repoPath + "\n"
+	content += labelStyle.Render("Created: ") + inst.CreatedAt.Format("2006-01-02 15:04:05") + "\n"
 
 	if inst.OriginalPrompt != "" {
-		content += "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Bold(true).Render("Original Prompt") + "\n\n"
+		content += "\n" + headerStyle.Render("Original Prompt") + "\n\n"
 		content += inst.OriginalPrompt
 	}
 
-	content += "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("Press esc to close")
+	content += "\n\n" + hintStyle.Render("y copy prompt  esc close")
 
 	m.textOverlay = overlay.NewTextOverlay(content)
+	if inst.OriginalPrompt != "" {
+		prompt := inst.OriginalPrompt
+		m.textOverlay.OnCopy = func() {
+			_ = clipboard.WriteAll(prompt)
+		}
+	}
 	m.state = stateHelp
 
 	return tea.WindowSize()

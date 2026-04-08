@@ -128,7 +128,7 @@ func (m *Menu) addInstanceOptions() {
 	}
 
 	// Instance management group
-	options := []keys.KeyName{keys.KeyNew, keys.KeyKill}
+	options := []keys.KeyName{keys.KeyNew, keys.KeyKill, keys.KeyInfo}
 
 	// Action group
 	actionGroup := []keys.KeyName{keys.KeyEnter, keys.KeySubmit}
