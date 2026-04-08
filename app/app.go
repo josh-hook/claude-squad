@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -1039,23 +1040,40 @@ func (m *home) handleError(err error) tea.Cmd {
 func (m *home) newPromptOverlay() *overlay.TextInputOverlay {
 	if !m.cwdIsGitRepo {
 		return overlay.NewTextInputOverlayWithRepoAndBranchPicker(
-			"Enter prompt", "", m.appConfig.GetProfiles(), m.getRecentRepos())
+			"Enter prompt", "", m.appConfig.GetProfiles(), m.getAvailableRepos())
 	}
 	return overlay.NewTextInputOverlayWithBranchPicker("Enter prompt", "", m.appConfig.GetProfiles())
 }
 
-// getRecentRepos extracts unique repo paths from existing instances.
-func (m *home) getRecentRepos() []string {
+// getAvailableRepos returns repo paths for the repo picker.
+// It discovers git repos under ~/repos and merges in repo paths from existing instances,
+// with repos already used by instances sorted first.
+func (m *home) getAvailableRepos() []string {
 	seen := make(map[string]bool)
-	var repos []string
+
+	// Collect repos from existing instances first (these are prioritized)
+	var recentRepos []string
 	for _, inst := range m.list.GetInstances() {
 		repoPath := inst.GetRepoPath()
 		if repoPath != "" && !seen[repoPath] {
 			seen[repoPath] = true
-			repos = append(repos, repoPath)
+			recentRepos = append(recentRepos, repoPath)
 		}
 	}
-	return repos
+
+	// Discover repos under ~/repos
+	home, err := os.UserHomeDir()
+	if err == nil {
+		discovered := overlay.DiscoverRepos(filepath.Join(home, "repos"))
+		for _, repo := range discovered {
+			if !seen[repo] {
+				seen[repo] = true
+				recentRepos = append(recentRepos, repo)
+			}
+		}
+	}
+
+	return recentRepos
 }
 
 // cancelPromptOverlay cancels the prompt overlay, cleaning up unstarted instances.

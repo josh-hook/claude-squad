@@ -10,20 +10,40 @@ import (
 )
 
 // RepoPicker is an embeddable component for selecting a git repository path.
-// It displays a text input for typing a path and a list of recently-used repos.
+// It shows discovered repos from a base directory, filterable by typing.
 type RepoPicker struct {
-	recentRepos []string // known repo paths from existing instances
-	filter      string   // typed text (path input)
-	cursor      int      // index into visibleItems()
-	focused     bool
-	width       int
+	repos   []string // all available repo paths (discovered + recent, deduplicated)
+	filter  string   // typed text to filter the list
+	cursor  int      // index into visibleItems()
+	focused bool
+	width   int
 }
 
-// NewRepoPicker creates a new repo picker with the given list of recent repos.
-func NewRepoPicker(recentRepos []string) *RepoPicker {
+// NewRepoPicker creates a new repo picker with the given list of available repos.
+func NewRepoPicker(repos []string) *RepoPicker {
 	return &RepoPicker{
-		recentRepos: recentRepos,
+		repos: repos,
 	}
+}
+
+// DiscoverRepos scans baseDir for immediate subdirectories that contain a .git directory.
+func DiscoverRepos(baseDir string) []string {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return nil
+	}
+	var repos []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(baseDir, entry.Name())
+		gitDir := filepath.Join(candidate, ".git")
+		if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
+			repos = append(repos, candidate)
+		}
+	}
+	return repos
 }
 
 // Focus gives the repo picker focus.
@@ -76,42 +96,30 @@ func (rp *RepoPicker) HandleKeyPress(msg tea.KeyMsg) (consumed bool, filterChang
 }
 
 // visibleItems returns the list of items to display, filtered by the typed text.
+// Matches against both the full path and the repo name (last path component).
 func (rp *RepoPicker) visibleItems() []string {
 	if rp.filter == "" {
-		return rp.recentRepos
+		return rp.repos
 	}
 	lower := strings.ToLower(rp.filter)
 	var items []string
-	for _, repo := range rp.recentRepos {
-		if strings.Contains(strings.ToLower(repo), lower) {
+	for _, repo := range rp.repos {
+		name := strings.ToLower(filepath.Base(repo))
+		full := strings.ToLower(repo)
+		if strings.Contains(name, lower) || strings.Contains(full, lower) {
 			items = append(items, repo)
 		}
 	}
 	return items
 }
 
-// GetSelectedRepo returns the selected repo path.
-// If the cursor is on a recent repo, returns that. Otherwise returns the typed filter text.
-// Expands ~ to $HOME.
+// GetSelectedRepo returns the selected repo path, or empty string if nothing is selected.
 func (rp *RepoPicker) GetSelectedRepo() string {
 	items := rp.visibleItems()
 	if rp.cursor >= 0 && rp.cursor < len(items) {
 		return items[rp.cursor]
 	}
-	// No matching item — treat filter as a custom path
-	return expandHome(rp.filter)
-}
-
-// expandHome expands a leading ~ to the user's home directory.
-func expandHome(path string) string {
-	if strings.HasPrefix(path, "~/") || path == "~" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return path
-		}
-		return filepath.Join(home, path[1:])
-	}
-	return path
+	return ""
 }
 
 var (
@@ -140,20 +148,15 @@ func (rp *RepoPicker) Render() string {
 	s.WriteString(rpLabelStyle.Render("Repository"))
 	if rp.focused {
 		cursor := rp.filter + "\u2588"
-		s.WriteString(rpFilterStyle.Render(" (path: " + cursor + ")"))
+		s.WriteString(rpFilterStyle.Render(" (filter: " + cursor + ")"))
 	} else if rp.filter != "" {
-		s.WriteString(rpDimStyle.Render(" (path: " + rp.filter + ")"))
+		s.WriteString(rpDimStyle.Render(" (filter: " + rp.filter + ")"))
 	}
 	s.WriteString("\n\n")
 
 	items := rp.visibleItems()
-	if len(items) == 0 && rp.filter == "" {
-		s.WriteString(rpHintStyle.Render("  Type a path to a git repository"))
-		return s.String()
-	}
-
 	if len(items) == 0 {
-		s.WriteString(rpHintStyle.Render("  Will use: " + expandHome(rp.filter)))
+		s.WriteString(rpHintStyle.Render("  No matching repositories"))
 		return s.String()
 	}
 
