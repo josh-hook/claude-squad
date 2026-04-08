@@ -162,9 +162,10 @@ func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
 
 	if strings.HasSuffix(t.program, ProgramClaude) {
 		if strings.Contains(content, "Do you trust the files in this folder?") ||
-			strings.Contains(content, "new MCP server") {
+			strings.Contains(content, "new MCP server") ||
+			strings.Contains(content, "Settings requiring approval") {
 			if err := t.TapEnter(); err != nil {
-				log.ErrorLog.Printf("could not tap enter on trust/MCP screen: %v", err)
+				log.ErrorLog.Printf("could not tap enter on trust/MCP/settings screen: %v", err)
 			}
 			return true
 		}
