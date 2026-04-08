@@ -281,6 +281,16 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool, bool) {
 			return false, false, filterChanged
 		}
 		if t.isTextarea() {
+			if msg.Type == tea.KeyBackspace && msg.Alt {
+				// Alt+Backspace: delete last word
+				t.deleteLastWord()
+				return false, false, false
+			}
+			if msg.Type == tea.KeyCtrlU {
+				// Ctrl+U (Cmd+Backspace in most macOS terminals): delete last line
+				t.deleteLastLine()
+				return false, false, false
+			}
 			t.textarea, _ = t.textarea.Update(msg)
 			return false, false, false
 		}
@@ -301,6 +311,34 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool, bool) {
 // GetValue returns the current value of the text input.
 func (t *TextInputOverlay) GetValue() string {
 	return t.textarea.Value()
+}
+
+// deleteLastWord removes the last word (space-delimited) from the textarea.
+func (t *TextInputOverlay) deleteLastWord() {
+	val := t.textarea.Value()
+	if val == "" {
+		return
+	}
+	// Trim trailing spaces, then find the last space
+	trimmed := strings.TrimRight(val, " ")
+	if idx := strings.LastIndex(trimmed, " "); idx >= 0 {
+		t.textarea.SetValue(trimmed[:idx+1])
+	} else {
+		t.textarea.SetValue("")
+	}
+}
+
+// deleteLastLine removes the last line (newline-delimited) from the textarea.
+func (t *TextInputOverlay) deleteLastLine() {
+	val := t.textarea.Value()
+	if val == "" {
+		return
+	}
+	if idx := strings.LastIndex(val, "\n"); idx >= 0 {
+		t.textarea.SetValue(val[:idx])
+	} else {
+		t.textarea.SetValue("")
+	}
 }
 
 // GetSelectedBranch returns the selected branch name from the branch picker.
