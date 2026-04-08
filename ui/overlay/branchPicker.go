@@ -146,16 +146,17 @@ func (bp *BranchPicker) SetDefaultBranch(branch string) {
 	bp.applyDefaultBranch()
 }
 
-// applyDefaultBranch moves the cursor to the default branch if it exists in the visible items.
+// applyDefaultBranch moves the cursor to the default branch if it exists in the results.
 func (bp *BranchPicker) applyDefaultBranch() {
 	if bp.defaultBranch == "" {
 		return
 	}
-	items := bp.visibleItems()
-	for i, item := range items {
-		if item == bp.defaultBranch {
-			bp.cursor = i
+	for i, branch := range bp.results {
+		if branch == bp.defaultBranch {
+			// Hide "New branch" and set cursor to the match.
+			// Since we hide "New branch", the results start at index 0.
 			bp.showNewBranch = false
+			bp.cursor = i
 			return
 		}
 	}
