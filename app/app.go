@@ -771,10 +771,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, nil
 	case keys.KeyUp:
 		m.list.Up()
-		return m, m.instanceChanged()
+		return m, tea.Batch(m.instanceChanged(), tea.WindowSize())
 	case keys.KeyDown:
 		m.list.Down()
-		return m, m.instanceChanged()
+		return m, tea.Batch(m.instanceChanged(), tea.WindowSize())
 	case keys.KeyShiftUp:
 		m.tabbedWindow.ScrollUp()
 		return m, m.instanceChanged()
