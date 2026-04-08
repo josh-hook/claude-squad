@@ -603,6 +603,59 @@ func (i *Instance) SendPrompt(prompt string) error {
 	return nil
 }
 
+// SendPromptWhenReady waits for the program to finish initializing, then sends the prompt.
+// It polls the tmux pane content looking for signs of readiness, handling trust prompts
+// along the way. This should be called from a background goroutine, not the UI loop.
+func (i *Instance) SendPromptWhenReady(prompt string) error {
+	if !i.started || i.tmuxSession == nil {
+		return fmt.Errorf("instance not started")
+	}
+
+	timeout := time.After(30 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			// Timed out waiting for readiness — send anyway as a last resort
+			log.WarningLog.Printf("timed out waiting for program readiness, sending prompt anyway")
+			return i.SendPrompt(prompt)
+		case <-ticker.C:
+			content, err := i.tmuxSession.CapturePaneContent()
+			if err != nil {
+				continue
+			}
+
+			// Handle trust prompts first
+			i.CheckAndHandleTrustPrompt()
+
+			// Check if the program has loaded (pane has meaningful content)
+			trimmed := strings.TrimSpace(content)
+			if len(trimmed) == 0 {
+				continue
+			}
+
+			// For Claude, wait until it shows the input area
+			if strings.HasSuffix(i.Program, "claude") {
+				// Claude is ready when it's showing the input prompt (not loading)
+				if strings.Contains(content, "What would you like to do?") ||
+					strings.Contains(content, "Claude Code") ||
+					strings.Contains(content, ">") {
+					// Give it a brief moment to finish rendering
+					time.Sleep(500 * time.Millisecond)
+					return i.SendPrompt(prompt)
+				}
+				continue
+			}
+
+			// For other programs, just wait for any content and send
+			time.Sleep(500 * time.Millisecond)
+			return i.SendPrompt(prompt)
+		}
+	}
+}
+
 // PreviewFullHistory captures the entire tmux pane output including full scrollback history
 func (i *Instance) PreviewFullHistory() (string, error) {
 	if !i.started || i.Status == Paused {
