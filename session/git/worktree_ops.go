@@ -2,6 +2,7 @@ package git
 
 import (
 	"claude-squad/log"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,15 +25,29 @@ func (g *GitWorktree) Setup() error {
 	// If this worktree uses a pre-existing branch, always set up from that branch
 	// (it may exist locally or only on the remote).
 	if g.isExistingBranch {
-		return g.setupFromExistingBranch()
+		if err := g.setupFromExistingBranch(); err != nil {
+			return err
+		}
+	} else {
+		// Check if branch exists using git CLI (much faster than go-git PlainOpen)
+		_, err = g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", g.branchName))
+		if err == nil {
+			if err := g.setupFromExistingBranch(); err != nil {
+				return err
+			}
+		} else {
+			if err := g.setupNewWorktree(); err != nil {
+				return err
+			}
+		}
 	}
 
-	// Check if branch exists using git CLI (much faster than go-git PlainOpen)
-	_, err = g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", g.branchName))
-	if err == nil {
-		return g.setupFromExistingBranch()
+	// Create .claude/settings.local.json so Claude Code trusts this worktree
+	if err := g.writeClaudeSettings(); err != nil {
+		log.WarningLog.Printf("failed to write claude settings to worktree: %v", err)
 	}
-	return g.setupNewWorktree()
+
+	return nil
 }
 
 // setupFromExistingBranch creates a worktree from an existing branch
@@ -91,6 +106,45 @@ func (g *GitWorktree) setupNewWorktree() error {
 	// TODO: we might want to give an option to use main/master instead of the current branch.
 	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, headCommit); err != nil {
 		return fmt.Errorf("failed to create worktree from commit %s: %w", headCommit, err)
+	}
+
+	return nil
+}
+
+// writeClaudeSettings creates a .claude/settings.local.json in the worktree
+// so that Claude Code trusts the directory and allows edits without prompting.
+func (g *GitWorktree) writeClaudeSettings() error {
+	claudeDir := filepath.Join(g.worktreePath, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		return fmt.Errorf("failed to create .claude directory: %w", err)
+	}
+
+	settings := map[string]interface{}{
+		"permissions": map[string]interface{}{
+			"allow": []string{
+				"Edit",
+				"Write",
+				"Bash(git add:*)",
+				"Bash(git commit:*)",
+				"Bash(git diff:*)",
+				"Bash(git log:*)",
+				"Bash(git status:*)",
+				"Bash(git push:*)",
+				"Bash(git checkout:*)",
+				"Bash(git branch:*)",
+			},
+			"deny": []string{},
+		},
+	}
+
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal claude settings: %w", err)
+	}
+
+	settingsPath := filepath.Join(claudeDir, "settings.local.json")
+	if err := os.WriteFile(settingsPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write claude settings: %w", err)
 	}
 
 	return nil
