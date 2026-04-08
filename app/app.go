@@ -87,6 +87,9 @@ type home struct {
 	// cwdIsGitRepo is true if the current working directory is inside a git repository.
 	cwdIsGitRepo bool
 
+	// pendingConfirmAction is the tea.Cmd to run if the user confirms in the confirmation modal.
+	pendingConfirmAction tea.Cmd
+
 	// lastDetectedPRURL tracks the last PR URL detected in the prompt to avoid re-fetching.
 	lastDetectedPRURL string
 
@@ -639,8 +642,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	if m.state == stateConfirm {
 		shouldClose := m.confirmationOverlay.HandleKeyPress(msg)
 		if shouldClose {
+			action := m.pendingConfirmAction
+			m.pendingConfirmAction = nil
 			m.state = stateDefault
 			m.confirmationOverlay = nil
+			if action != nil {
+				// Run the confirmed action as a background tea.Cmd
+				return m, action
+			}
 			return m, nil
 		}
 		return m, nil
@@ -1168,26 +1177,22 @@ func (m *home) cancelPromptOverlay() tea.Cmd {
 	)
 }
 
-// confirmAction shows a confirmation modal and stores the action to execute on confirm
+// confirmAction shows a confirmation modal and stores the action to execute on confirm.
+// The action runs as a background tea.Cmd when the user confirms, keeping the UI responsive.
 func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	m.state = stateConfirm
+	m.pendingConfirmAction = action
 
 	// Create and show the confirmation overlay using ConfirmationOverlay
 	m.confirmationOverlay = overlay.NewConfirmationOverlay(message)
 	// Set a fixed width for consistent appearance
 	m.confirmationOverlay.SetWidth(50)
 
-	// Set callbacks for confirmation and cancellation
 	m.confirmationOverlay.OnConfirm = func() {
-		m.state = stateDefault
-		// Execute the action if it exists
-		if action != nil {
-			_ = action()
-		}
+		// Action is dispatched from the stateConfirm handler, not here
 	}
-
 	m.confirmationOverlay.OnCancel = func() {
-		m.state = stateDefault
+		m.pendingConfirmAction = nil
 	}
 
 	return nil
