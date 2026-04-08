@@ -25,16 +25,26 @@ func NewTextOverlay(content string) *TextOverlay {
 	}
 }
 
-// HandleKeyPress processes a key press and updates the state
-// Returns true if the overlay should be closed
+// HandleKeyPress processes a key press and updates the state.
+// Returns true if the overlay should be closed. Only closes on Esc or q.
 func (t *TextOverlay) HandleKeyPress(msg tea.KeyMsg) bool {
-	// Close on any key
-	t.Dismissed = true
-	// Call the OnDismiss callback if it exists
-	if t.OnDismiss != nil {
-		t.OnDismiss()
+	switch msg.Type {
+	case tea.KeyEscape:
+		t.Dismissed = true
+		if t.OnDismiss != nil {
+			t.OnDismiss()
+		}
+		return true
+	default:
+		if msg.String() == "q" {
+			t.Dismissed = true
+			if t.OnDismiss != nil {
+				t.OnDismiss()
+			}
+			return true
+		}
+		return false
 	}
-	return true
 }
 
 // Render renders the text overlay

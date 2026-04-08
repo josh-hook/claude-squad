@@ -569,6 +569,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 						selected.Program = selectedProgram
 					}
 					selected.Prompt = prompt
+					if prompt != "" {
+						selected.OriginalPrompt = prompt
+					}
 
 					// Finalize into list and start
 					selected.SetStatus(session.Loading)
@@ -689,6 +692,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	switch name {
 	case keys.KeyHelp:
 		return m.showHelpScreen(helpTypeGeneral{}, nil)
+	case keys.KeyInfo:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil {
+			return m, nil
+		}
+		return m, m.showInstanceInfo(selected)
 	case keys.KeyPrompt:
 		if m.list.NumInstances() >= GlobalInstanceLimit {
 			return m, m.handleError(
@@ -1089,6 +1098,36 @@ func (m *home) handleError(err error) tea.Cmd {
 
 		return hideErrMsg{}
 	}
+}
+
+// showInstanceInfo displays a read-only overlay with the instance's original configuration.
+func (m *home) showInstanceInfo(inst *session.Instance) tea.Cmd {
+	var content string
+
+	content += lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Bold(true).Render("Session Info") + "\n\n"
+
+	content += lipgloss.NewStyle().Bold(true).Render("Title: ") + inst.Title + "\n"
+	content += lipgloss.NewStyle().Bold(true).Render("Program: ") + inst.Program + "\n"
+	content += lipgloss.NewStyle().Bold(true).Render("Branch: ") + inst.Branch + "\n"
+
+	repoPath := inst.GetRepoPath()
+	if repoPath == "" {
+		repoPath = inst.Path
+	}
+	content += lipgloss.NewStyle().Bold(true).Render("Repository: ") + repoPath + "\n"
+	content += lipgloss.NewStyle().Bold(true).Render("Created: ") + inst.CreatedAt.Format("2006-01-02 15:04:05") + "\n"
+
+	if inst.OriginalPrompt != "" {
+		content += "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Bold(true).Render("Original Prompt") + "\n\n"
+		content += inst.OriginalPrompt
+	}
+
+	content += "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("Press esc to close")
+
+	m.textOverlay = overlay.NewTextOverlay(content)
+	m.state = stateHelp
+
+	return tea.WindowSize()
 }
 
 // detectPRURL checks the prompt text for a GitHub PR URL and triggers a background
