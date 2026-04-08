@@ -44,7 +44,8 @@ type TextInputOverlay struct {
 	repoPicker    *RepoPicker
 	profilePicker *ProfilePicker
 	branchPicker  *BranchPicker
-	numStops      int // total number of focus stops
+	numStops      int  // total number of focus stops
+	pendingEsc    bool // true after first Esc when textarea has content
 }
 
 // NewTextInputOverlay creates a new text input overlay with the given title and initial value.
@@ -239,12 +240,19 @@ func (t *TextInputOverlay) updateFocusState() {
 func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool, bool) {
 	switch msg.Type {
 	case tea.KeyTab:
+		t.pendingEsc = false
 		t.setFocusIndex((t.FocusIndex + 1) % t.numStops)
 		return false, false, false
 	case tea.KeyShiftTab:
+		t.pendingEsc = false
 		t.setFocusIndex((t.FocusIndex - 1 + t.numStops) % t.numStops)
 		return false, false, false
 	case tea.KeyEsc:
+		// If the textarea has content, require a double-Esc to confirm discard.
+		if strings.TrimSpace(t.textarea.Value()) != "" && !t.pendingEsc {
+			t.pendingEsc = true
+			return false, false, false
+		}
 		t.Canceled = true
 		return true, false, false
 	case tea.KeyEnter:
@@ -276,6 +284,7 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool, bool) {
 		}
 		return false, false, false
 	default:
+		t.pendingEsc = false
 		if t.isRepoPicker() {
 			_, filterChanged := t.repoPicker.HandleKeyPress(msg)
 			return false, false, filterChanged
@@ -436,6 +445,12 @@ func (t *TextInputOverlay) Render() string {
 		enterButton = tiButtonStyle.Render(enterButton)
 	}
 	content += enterButton
+
+	// Show warning when pending Esc confirmation
+	if t.pendingEsc {
+		warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#de613e")).Bold(true)
+		content += "\n\n" + warnStyle.Render("Discard prompt? Press ESC again to confirm.")
+	}
 
 	return tiStyle.Render(content)
 }
