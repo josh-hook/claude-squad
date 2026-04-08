@@ -22,6 +22,13 @@ func (g *GitWorktree) Setup() error {
 		return err
 	}
 
+	// Fetch the default branch so diffs are computed against the latest main/master.
+	defaultBranch := FindDefaultBranch(g.repoPath)
+	fetchCmd := exec.Command("git", "-C", g.repoPath, "fetch", "origin", defaultBranch)
+	if err := fetchCmd.Run(); err != nil {
+		log.WarningLog.Printf("failed to fetch %s: %v (continuing anyway)", defaultBranch, err)
+	}
+
 	// If this worktree uses a pre-existing branch, always set up from that branch
 	// (it may exist locally or only on the remote).
 	if g.isExistingBranch {
@@ -39,6 +46,17 @@ func (g *GitWorktree) Setup() error {
 			if err := g.setupNewWorktree(); err != nil {
 				return err
 			}
+		}
+	}
+
+	// Set baseCommitSHA to the default branch tip for accurate diffs.
+	// This shows changes relative to main/master rather than the commit
+	// the branch was created from.
+	if g.baseCommitSHA == "" {
+		if sha, err := g.runGitCommand(g.repoPath, "rev-parse", fmt.Sprintf("origin/%s", defaultBranch)); err == nil {
+			g.baseCommitSHA = strings.TrimSpace(sha)
+		} else if sha, err := g.runGitCommand(g.repoPath, "rev-parse", defaultBranch); err == nil {
+			g.baseCommitSHA = strings.TrimSpace(sha)
 		}
 	}
 
@@ -98,7 +116,6 @@ func (g *GitWorktree) setupNewWorktree() error {
 		return fmt.Errorf("failed to get HEAD commit hash: %w", err)
 	}
 	headCommit := strings.TrimSpace(string(output))
-	g.baseCommitSHA = headCommit
 
 	// Create a new worktree from the HEAD commit
 	// Otherwise, we'll inherit uncommitted changes from the previous worktree.

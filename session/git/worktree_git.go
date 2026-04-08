@@ -52,6 +52,29 @@ func SearchBranches(repoPath, filter string) ([]string, error) {
 	return branches, nil
 }
 
+// FindDefaultBranch returns "main" or "master", whichever exists as a local branch.
+// Falls back to "main" if neither is found.
+func FindDefaultBranch(repoPath string) string {
+	cmd := exec.Command("git", "-C", repoPath, "show-ref", "--verify", "refs/heads/main")
+	if cmd.Run() == nil {
+		return "main"
+	}
+	cmd = exec.Command("git", "-C", repoPath, "show-ref", "--verify", "refs/heads/master")
+	if cmd.Run() == nil {
+		return "master"
+	}
+	// Check remote refs too
+	cmd = exec.Command("git", "-C", repoPath, "show-ref", "--verify", "refs/remotes/origin/main")
+	if cmd.Run() == nil {
+		return "main"
+	}
+	cmd = exec.Command("git", "-C", repoPath, "show-ref", "--verify", "refs/remotes/origin/master")
+	if cmd.Run() == nil {
+		return "master"
+	}
+	return "main"
+}
+
 // runGitCommand executes a git command and returns any error
 func (g *GitWorktree) runGitCommand(path string, args ...string) (string, error) {
 	baseArgs := []string{"-C", path}
