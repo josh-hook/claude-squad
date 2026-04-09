@@ -550,7 +550,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			if m.textInputOverlay.IsSubmitted() {
 				prompt := m.textInputOverlay.GetValue()
 				selectedBranch := m.textInputOverlay.GetSelectedBranch()
-				selectedProgram := m.textInputOverlay.GetSelectedProgram()
 				selectedRepo := m.textInputOverlay.GetSelectedRepo()
 
 				if !selected.Started() {
@@ -569,9 +568,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 					// Shift+N flow: instance not started yet — set branch, start, then send prompt
 					if selectedBranch != "" {
 						selected.SetSelectedBranch(selectedBranch)
-					}
-					if selectedProgram != "" {
-						selected.Program = selectedProgram
 					}
 					selected.Prompt = prompt
 					if prompt != "" {
@@ -1178,9 +1174,9 @@ func (m *home) newPromptOverlay() *overlay.TextInputOverlay {
 	m.lastDetectedPRURL = ""
 	if !m.cwdIsGitRepo {
 		return overlay.NewTextInputOverlayWithRepoAndBranchPicker(
-			"Enter prompt", "", m.appConfig.GetProfiles(), m.getAvailableRepos())
+			"Enter prompt", "", m.getAvailableRepos())
 	}
-	return overlay.NewTextInputOverlayWithBranchPicker("Enter prompt", "", m.appConfig.GetProfiles())
+	return overlay.NewTextInputOverlayWithBranchPicker("Enter prompt", "")
 }
 
 // getAvailableRepos returns repo paths for the repo picker.

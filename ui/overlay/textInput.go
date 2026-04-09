@@ -1,7 +1,6 @@
 package overlay
 
 import (
-	"claude-squad/config"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -41,9 +40,8 @@ type TextInputOverlay struct {
 	OnSubmit      func()
 	width         int
 	height        int
-	repoPicker    *RepoPicker
-	profilePicker *ProfilePicker
-	branchPicker  *BranchPicker
+	repoPicker   *RepoPicker
+	branchPicker *BranchPicker
 	numStops      int  // total number of focus stops
 	pendingEsc    bool // true after first Esc when textarea has content
 }
@@ -60,55 +58,33 @@ func NewTextInputOverlay(title string, initialValue string) *TextInputOverlay {
 
 // NewTextInputOverlayWithBranchPicker creates a text input overlay that includes an
 // empty branch picker. Results are populated asynchronously via SetBranchResults.
-func NewTextInputOverlayWithBranchPicker(title string, initialValue string, profiles []config.Profile) *TextInputOverlay {
+func NewTextInputOverlayWithBranchPicker(title string, initialValue string) *TextInputOverlay {
 	ti := newTextarea(initialValue)
 	bp := NewBranchPicker()
 
-	var pp *ProfilePicker
-	if len(profiles) > 0 {
-		pp = NewProfilePicker(profiles)
-	}
-
-	numStops := 3 // textarea + branch picker + enter button
-	if pp != nil && pp.HasMultiple() {
-		numStops = 4 // profile picker + textarea + branch picker + enter button
-	}
-
 	overlay := &TextInputOverlay{
-		textarea:      ti,
-		Title:         title,
-		profilePicker: pp,
-		branchPicker:  bp,
-		numStops:      numStops,
+		textarea:     ti,
+		Title:        title,
+		branchPicker: bp,
+		numStops:     3, // textarea + branch picker + enter button
 	}
 	overlay.updateFocusState()
 	return overlay
 }
 
 // NewTextInputOverlayWithRepoAndBranchPicker creates a text input overlay that includes
-// a repo picker, an optional profile picker, and a branch picker.
-func NewTextInputOverlayWithRepoAndBranchPicker(title string, initialValue string, profiles []config.Profile, recentRepos []string) *TextInputOverlay {
+// a repo picker and a branch picker.
+func NewTextInputOverlayWithRepoAndBranchPicker(title string, initialValue string, recentRepos []string) *TextInputOverlay {
 	ti := newTextarea(initialValue)
 	bp := NewBranchPicker()
 	rp := NewRepoPicker(recentRepos)
 
-	var pp *ProfilePicker
-	if len(profiles) > 0 {
-		pp = NewProfilePicker(profiles)
-	}
-
-	numStops := 4 // repo picker + textarea + branch picker + enter button
-	if pp != nil && pp.HasMultiple() {
-		numStops = 5 // repo picker + profile picker + textarea + branch picker + enter button
-	}
-
 	overlay := &TextInputOverlay{
-		textarea:      ti,
-		Title:         title,
-		repoPicker:    rp,
-		profilePicker: pp,
-		branchPicker:  bp,
-		numStops:      numStops,
+		textarea:     ti,
+		Title:        title,
+		repoPicker:   rp,
+		branchPicker: bp,
+		numStops:     4, // repo picker + textarea + branch picker + enter button
 	}
 	overlay.updateFocusState()
 	return overlay
@@ -131,16 +107,12 @@ func (t *TextInputOverlay) SetSize(width, height int) {
 	t.height = height
 
 	// Reserve space for the other components so the overlay fits on screen.
-	// Each picker/section takes roughly 4-6 lines (label + items + divider + spacing).
 	reserved := 6 // title + enter button + dividers + padding
 	if t.repoPicker != nil {
 		reserved += 8
 	}
-	if t.profilePicker != nil {
-		reserved += 5
-	}
 	if t.branchPicker != nil {
-		reserved += 8
+		reserved += 3 // single-line branch display + divider
 	}
 	textareaHeight := height - reserved
 	if textareaHeight < 2 {
@@ -152,9 +124,6 @@ func (t *TextInputOverlay) SetSize(width, height int) {
 	}
 	if t.branchPicker != nil {
 		t.branchPicker.SetWidth(width - 6)
-	}
-	if t.profilePicker != nil {
-		t.profilePicker.SetWidth(width - 6)
 	}
 }
 
@@ -168,14 +137,11 @@ func (t *TextInputOverlay) View() string {
 	return t.Render()
 }
 
-// focusOffset returns how many focus stops precede the profile picker / textarea.
-// repo picker (if present) takes index 0, profile picker (if present and multiple) takes the next.
+// focusOffset returns how many focus stops precede the textarea.
+// repo picker (if present) takes index 0.
 func (t *TextInputOverlay) focusOffset() int {
 	offset := 0
 	if t.repoPicker != nil {
-		offset++
-	}
-	if t.profilePicker != nil && t.profilePicker.HasMultiple() {
 		offset++
 	}
 	return offset
@@ -184,18 +150,6 @@ func (t *TextInputOverlay) focusOffset() int {
 // isRepoPicker returns true if the current focus is on the repo picker.
 func (t *TextInputOverlay) isRepoPicker() bool {
 	return t.repoPicker != nil && t.FocusIndex == 0
-}
-
-// isProfilePicker returns true if the current focus is on the profile picker.
-func (t *TextInputOverlay) isProfilePicker() bool {
-	if t.profilePicker == nil || !t.profilePicker.HasMultiple() {
-		return false
-	}
-	expectedIdx := 0
-	if t.repoPicker != nil {
-		expectedIdx = 1
-	}
-	return t.FocusIndex == expectedIdx
 }
 
 // isTextarea returns true if the current focus is on the textarea.
@@ -222,7 +176,7 @@ func (t *TextInputOverlay) setFocusIndex(i int) {
 	t.updateFocusState()
 }
 
-// updateFocusState syncs the textarea/branchPicker/profilePicker/repoPicker focus/blur state.
+// updateFocusState syncs the textarea/branchPicker/repoPicker focus/blur state.
 func (t *TextInputOverlay) updateFocusState() {
 	if t.isTextarea() {
 		t.textarea.Focus()
@@ -241,13 +195,6 @@ func (t *TextInputOverlay) updateFocusState() {
 			t.branchPicker.Focus()
 		} else {
 			t.branchPicker.Blur()
-		}
-	}
-	if t.profilePicker != nil {
-		if t.isProfilePicker() {
-			t.profilePicker.Focus()
-		} else {
-			t.profilePicker.Blur()
 		}
 	}
 }
@@ -290,11 +237,6 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool, bool) {
 			t.setFocusIndex(t.numStops - 1)
 			return false, false, false
 		}
-		if t.isProfilePicker() {
-			// Enter on profile picker = advance to textarea
-			t.setFocusIndex(t.FocusIndex + 1)
-			return false, false, false
-		}
 		// Send enter to textarea
 		if t.isTextarea() {
 			t.textarea, _ = t.textarea.Update(msg)
@@ -308,12 +250,6 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool, bool) {
 		}
 		if t.isTextarea() {
 			t.textarea, _ = t.textarea.Update(msg)
-			return false, false, false
-		}
-		if t.isProfilePicker() {
-			if msg.Type == tea.KeyLeft || msg.Type == tea.KeyRight {
-				t.profilePicker.HandleKeyPress(msg)
-			}
 			return false, false, false
 		}
 		if t.isBranchPicker() {
@@ -338,14 +274,6 @@ func (t *TextInputOverlay) GetSelectedBranch() string {
 	return t.branchPicker.GetSelectedBranch()
 }
 
-// GetSelectedProgram returns the program string from the selected profile.
-// Returns empty string if no profile picker is present.
-func (t *TextInputOverlay) GetSelectedProgram() string {
-	if t.profilePicker == nil {
-		return ""
-	}
-	return t.profilePicker.GetSelectedProfile().Program
-}
 
 // BranchFilterVersion returns the current filter version from the branch picker.
 // Returns 0 if no branch picker is present.
@@ -437,19 +365,19 @@ func (t *TextInputOverlay) Render() string {
 		content += divider + "\n\n"
 	}
 
-	// Render profile picker if present, above the prompt
-	if t.profilePicker != nil {
-		content += t.profilePicker.Render() + "\n\n"
-		content += divider + "\n\n"
-	}
-
 	content += tiTitleStyle.Render(t.Title) + "\n"
 	content += t.textarea.View() + "\n\n"
 
-	// Render branch picker if present, with dividers
+	// Render branch as a single line showing the selected branch
 	if t.branchPicker != nil {
+		branchName := t.branchPicker.GetSelectedBranch()
+		if branchName == "" {
+			branchName = "New branch (from HEAD)"
+		}
+		branchLabel := tiTitleStyle.Render("Branch: ") +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#c4b5fd")).Render(branchName)
 		content += divider + "\n\n"
-		content += t.branchPicker.Render() + "\n\n"
+		content += branchLabel + "\n\n"
 	}
 
 	content += divider + "\n\n"
