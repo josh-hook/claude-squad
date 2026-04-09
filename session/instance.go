@@ -5,6 +5,7 @@ import (
 	"claude-squad/session/git"
 	"claude-squad/session/tmux"
 	"path/filepath"
+	"regexp"
 
 	"fmt"
 	"os"
@@ -13,6 +14,10 @@ import (
 
 	"github.com/atotto/clipboard"
 )
+
+// resumeRegex matches "claude --resume <id-or-name>" in pane content,
+// with optional quotes around the session identifier.
+var resumeRegex = regexp.MustCompile(`claude --resume "?([^\s"]+)"?`)
 
 type Status int
 
@@ -273,7 +278,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 			return setupErr
 		}
 
-		// Create new session
+		// Create new session (starts a plain shell)
 		if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
@@ -282,10 +287,54 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 			setupErr = fmt.Errorf("failed to start new session: %w", err)
 			return setupErr
 		}
+
+		// Wait for the shell to be ready, then send the program command.
+		if err := i.sendProgramToSession(); err != nil {
+			setupErr = fmt.Errorf("failed to send program to session: %w", err)
+			return setupErr
+		}
 	}
 
 	i.SetStatus(Running)
 
+	return nil
+}
+
+// sendProgramToSession waits for the tmux shell to be ready, then sends the program command.
+func (i *Instance) sendProgramToSession() error {
+	if i.Program == "" {
+		return nil
+	}
+
+	timeout := time.After(5 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			log.WarningLog.Printf("timed out waiting for shell, sending program anyway")
+			return i.sendProgramCommand()
+		case <-ticker.C:
+			content, err := i.tmuxSession.CapturePaneContent()
+			if err != nil || len(strings.TrimSpace(content)) == 0 {
+				continue
+			}
+			// Shell has content — it's ready
+			return i.sendProgramCommand()
+		}
+	}
+}
+
+// sendProgramCommand sends the program name as keystrokes to the tmux session.
+func (i *Instance) sendProgramCommand() error {
+	if err := i.tmuxSession.SendKeys(i.Program); err != nil {
+		return fmt.Errorf("error sending program command: %w", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := i.tmuxSession.TapEnter(); err != nil {
+		return fmt.Errorf("error sending enter for program: %w", err)
+	}
 	return nil
 }
 
@@ -366,7 +415,7 @@ func (i *Instance) CheckAndHandleResumePrompt() bool {
 		return false
 	}
 
-	match := tmux.ResumeRegex.FindString(content)
+	match := resumeRegex.FindString(content)
 	if match == "" {
 		return false
 	}
@@ -383,18 +432,38 @@ func (i *Instance) CheckAndHandleResumePrompt() bool {
 	return true
 }
 
-// CheckAndHandleTrustPrompt checks for and dismisses the trust prompt for supported programs.
+// CheckAndHandleTrustPrompt checks for and dismisses trust/approval prompts for supported programs.
+// Returns true if a prompt was found and handled.
 func (i *Instance) CheckAndHandleTrustPrompt() bool {
 	if !i.started || i.tmuxSession == nil {
 		return false
 	}
-	program := i.Program
-	if !strings.HasSuffix(program, tmux.ProgramClaude) &&
-		!strings.HasSuffix(program, tmux.ProgramAider) &&
-		!strings.HasSuffix(program, tmux.ProgramGemini) {
+
+	content, err := i.tmuxSession.CapturePaneContent()
+	if err != nil {
 		return false
 	}
-	return i.tmuxSession.CheckAndHandleTrustPrompt()
+
+	if strings.HasSuffix(i.Program, tmux.ProgramClaude) {
+		if strings.Contains(content, "Do you trust the files in this folder?") ||
+			strings.Contains(content, "new MCP server") ||
+			strings.Contains(content, "Settings requiring approval") {
+			if err := i.tmuxSession.TapEnter(); err != nil {
+				log.ErrorLog.Printf("could not tap enter on trust/MCP/settings screen: %v", err)
+			}
+			return true
+		}
+	} else if strings.HasSuffix(i.Program, tmux.ProgramAider) ||
+		strings.HasSuffix(i.Program, tmux.ProgramGemini) {
+		if strings.Contains(content, "Open documentation url for more info") {
+			if err := i.tmuxSession.TapDAndEnter(); err != nil {
+				log.ErrorLog.Printf("could not tap enter on trust screen: %v", err)
+			}
+			return true
+		}
+	}
+
+	return false
 }
 
 // TapEnter sends an enter key press to the tmux session if AutoYes is enabled.

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,10 +20,12 @@ import (
 	"github.com/creack/pty"
 )
 
-const ProgramClaude = "claude"
-
-const ProgramAider = "aider"
-const ProgramGemini = "gemini"
+const (
+	ProgramClaude      = "claude"
+	ProgramAider       = "aider"
+	ProgramGemini      = "gemini"
+	shellPreambleLines = 3
+)
 
 // TmuxSession represents a managed tmux session
 type TmuxSession struct {
@@ -151,49 +154,7 @@ func (t *TmuxSession) Start(workDir string) error {
 		return fmt.Errorf("error restoring tmux session: %w", err)
 	}
 
-	// Send the program command to the shell running in the tmux session.
-	// This way the session's shell survives if the program exits, allowing
-	// automatic resume via the resume command detection.
-	if t.program != "" {
-		time.Sleep(100 * time.Millisecond) // let the shell initialize
-		if err := t.SendKeys(t.program); err != nil {
-			return fmt.Errorf("error sending program command: %w", err)
-		}
-		time.Sleep(50 * time.Millisecond)
-		if err := t.TapEnter(); err != nil {
-			return fmt.Errorf("error sending enter for program: %w", err)
-		}
-	}
-
 	return nil
-}
-
-// CheckAndHandleTrustPrompt checks the pane content once for a trust prompt and dismisses it if found.
-// Returns true if the prompt was found and handled.
-func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
-	content, err := t.CapturePaneContent()
-	if err != nil {
-		return false
-	}
-
-	if strings.HasSuffix(t.program, ProgramClaude) {
-		if strings.Contains(content, "Do you trust the files in this folder?") ||
-			strings.Contains(content, "new MCP server") ||
-			strings.Contains(content, "Settings requiring approval") {
-			if err := t.TapEnter(); err != nil {
-				log.ErrorLog.Printf("could not tap enter on trust/MCP/settings screen: %v", err)
-			}
-			return true
-		}
-	} else {
-		if strings.Contains(content, "Open documentation url for more info") {
-			if err := t.TapDAndEnter(); err != nil {
-				log.ErrorLog.Printf("could not tap enter on trust screen: %v", err)
-			}
-			return true
-		}
-	}
-	return false
 }
 
 // Restore attaches to an existing session and restores the window size
@@ -246,10 +207,6 @@ func (t *TmuxSession) SendKeys(keys string) error {
 	_, err := t.ptmx.Write([]byte(keys))
 	return err
 }
-
-// ResumeRegex matches "claude --resume <id-or-name>" in pane content,
-// with optional quotes around the session identifier.
-var ResumeRegex = regexp.MustCompile(`claude --resume "?([^\s"]+)"?`)
 
 // HasUpdated checks if the tmux pane content has changed since the last tick. It also returns true if
 // the tmux pane has a prompt for aider or claude code.
@@ -485,7 +442,7 @@ func (t *TmuxSession) DoesSessionExist() bool {
 // CapturePaneContent captures the content of the tmux pane
 func (t *TmuxSession) CapturePaneContent() (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName)
+	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-S", strconv.Itoa(shellPreambleLines), "-t", t.sanitizedName)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("error capturing pane content: %v", err)
@@ -496,8 +453,16 @@ func (t *TmuxSession) CapturePaneContent() (string, error) {
 // CapturePaneContentWithOptions captures the pane content with additional options
 // start and end specify the starting and ending line numbers (use "-" for the start/end of history)
 func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, error) {
-	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.sanitizedName)
+	// Offset the start line to skip the shell preamble, unless it's "-" (full history).
+	adjustedStart := start
+	if start != "-" {
+		startInt, err := strconv.Atoi(start)
+		if err != nil {
+			return "", fmt.Errorf("invalid start line number: %w", err)
+		}
+		adjustedStart = strconv.Itoa(startInt + shellPreambleLines)
+	}
+	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-S", adjustedStart, "-E", end, "-t", t.sanitizedName)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to capture tmux pane content with options: %v", err)
