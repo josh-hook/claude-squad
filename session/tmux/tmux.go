@@ -231,6 +231,9 @@ func (t *TmuxSession) SendKeys(keys string) error {
 	return err
 }
 
+// resumeSessionRegex matches "claude --resume <session-id>" in pane content.
+var resumeSessionRegex = regexp.MustCompile(`claude --resume ([0-9a-f-]+)`)
+
 // HasUpdated checks if the tmux pane content has changed since the last tick. It also returns true if
 // the tmux pane has a prompt for aider or claude code.
 func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
@@ -247,6 +250,24 @@ func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
 		hasPrompt = strings.Contains(content, "(Y)es/(N)o/(D)on't ask again")
 	} else if strings.HasPrefix(t.program, ProgramGemini) {
 		hasPrompt = strings.Contains(content, "Yes, allow once")
+	}
+
+	// Detect if Claude exited and left a resume command.
+	// If found, automatically re-run the resume command to restart the session.
+	if strings.HasSuffix(t.program, ProgramClaude) {
+		if strings.Contains(content, "Resume this session with:") {
+			if match := resumeSessionRegex.FindString(content); match != "" {
+				log.InfoLog.Printf("detected claude exit with resume command: %s", match)
+				if err := t.SendKeys(match); err != nil {
+					log.ErrorLog.Printf("failed to send resume command: %v", err)
+				} else {
+					time.Sleep(100 * time.Millisecond)
+					if err := t.TapEnter(); err != nil {
+						log.ErrorLog.Printf("failed to tap enter for resume: %v", err)
+					}
+				}
+			}
+		}
 	}
 
 	if !bytes.Equal(t.monitor.hash(content), t.monitor.prevOutputHash) {
