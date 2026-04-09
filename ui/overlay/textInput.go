@@ -127,9 +127,26 @@ func newTextarea(initialValue string) textarea.Model {
 }
 
 func (t *TextInputOverlay) SetSize(width, height int) {
-	t.textarea.SetHeight(height)
 	t.width = width
 	t.height = height
+
+	// Reserve space for the other components so the overlay fits on screen.
+	// Each picker/section takes roughly 4-6 lines (label + items + divider + spacing).
+	reserved := 6 // title + enter button + dividers + padding
+	if t.repoPicker != nil {
+		reserved += 8
+	}
+	if t.profilePicker != nil {
+		reserved += 5
+	}
+	if t.branchPicker != nil {
+		reserved += 8
+	}
+	textareaHeight := height - reserved
+	if textareaHeight < 2 {
+		textareaHeight = 2
+	}
+	t.textarea.SetHeight(textareaHeight)
 	if t.repoPicker != nil {
 		t.repoPicker.SetWidth(width - 6)
 	}

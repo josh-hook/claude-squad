@@ -183,7 +183,8 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	m.list.SetSize(listWidth, contentHeight)
 
 	if m.textInputOverlay != nil {
-		m.textInputOverlay.SetSize(int(float32(msg.Width)*0.6), int(float32(msg.Height)*0.4))
+		overlayHeight := int(float32(msg.Height) * 0.7)
+		m.textInputOverlay.SetSize(int(float32(msg.Width)*0.6), overlayHeight)
 	}
 	if m.textOverlay != nil {
 		m.textOverlay.SetWidth(int(float32(msg.Width) * 0.6))
