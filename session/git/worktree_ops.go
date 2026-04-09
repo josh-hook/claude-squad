@@ -70,12 +70,17 @@ func (g *GitWorktree) Setup() error {
 	return nil
 }
 
-// setupFromExistingBranch creates a worktree from an existing branch
+// setupFromExistingBranch creates a worktree from an existing branch.
+// If the worktree already exists on disk, it is reused.
 func (g *GitWorktree) setupFromExistingBranch() error {
-	// Directory already created in Setup(), skip duplicate creation
+	// If the worktree directory already exists, reuse it.
+	if info, err := os.Stat(g.worktreePath); err == nil && info.IsDir() {
+		log.InfoLog.Printf("worktree already exists at %s, reusing", g.worktreePath)
+		return nil
+	}
 
-	// Clean up any existing worktree first
-	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath) // Ignore error if worktree doesn't exist
+	// Clean up any stale worktree reference (directory gone but git still tracks it)
+	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath)
 
 	// Check if the local branch exists
 	_, localErr := g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", g.branchName))
@@ -100,13 +105,20 @@ func (g *GitWorktree) setupFromExistingBranch() error {
 	return nil
 }
 
-// setupNewWorktree creates a new worktree from HEAD
+// setupNewWorktree creates a new worktree from HEAD.
+// If the worktree already exists on disk, it is reused.
 func (g *GitWorktree) setupNewWorktree() error {
-	// Clean up any existing worktree first
-	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath) // Ignore error if worktree doesn't exist
+	// If the worktree directory already exists, reuse it.
+	if info, err := os.Stat(g.worktreePath); err == nil && info.IsDir() {
+		log.InfoLog.Printf("worktree already exists at %s, reusing", g.worktreePath)
+		return nil
+	}
+
+	// Clean up any stale worktree reference
+	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath)
 
 	// Clean up any existing branch using git CLI (much faster than go-git PlainOpen)
-	_, _ = g.runGitCommand(g.repoPath, "branch", "-D", g.branchName) // Ignore error if branch doesn't exist
+	_, _ = g.runGitCommand(g.repoPath, "branch", "-D", g.branchName)
 
 	output, err := g.runGitCommand(g.repoPath, "rev-parse", "HEAD")
 	if err != nil {
