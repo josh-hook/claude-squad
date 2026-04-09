@@ -30,7 +30,6 @@ func NewExtensionManager(snapshotFn func() []*session.Instance) *ExtensionManage
 	return &ExtensionManager{
 		extensions: []Extension{
 			NewGHActionsExtension(),
-			NewAgentReviewExtension(),
 		},
 		interval:  30 * time.Second,
 		stopCh:    make(chan struct{}),

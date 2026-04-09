@@ -52,6 +52,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"p":          KeySubmit,
 	"?":          KeyHelp,
 	"i":          KeyInfo,
+	"ctrl+r":     KeyReview,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -115,6 +116,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyInfo: key.NewBinding(
 		key.WithKeys("i"),
 		key.WithHelp("i", "info"),
+	),
+	KeyReview: key.NewBinding(
+		key.WithKeys("ctrl+r"),
+		key.WithHelp("ctrl+r", "review"),
 	),
 
 	// -- Special keybindings --

@@ -714,6 +714,19 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		return m, m.showInstanceInfo(selected)
+	case keys.KeyReview:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || !selected.Started() || selected.Paused() {
+			return m, nil
+		}
+		reviewCmd := func() tea.Msg {
+			prompt := "Run the pr-reviewer subagent on this PR, act on any of its feedback."
+			if err := selected.SendPrompt(prompt); err != nil {
+				log.ErrorLog.Printf("failed to send review prompt: %v", err)
+			}
+			return nil
+		}
+		return m, reviewCmd
 	case keys.KeyPrompt:
 		if m.list.NumInstances() >= GlobalInstanceLimit {
 			return m, m.handleError(
