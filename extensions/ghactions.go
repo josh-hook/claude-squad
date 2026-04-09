@@ -136,8 +136,8 @@ func getPRInfo(repoDir, branch string) (*prInfo, error) {
 // getFailingChecks returns a summary of failing CI checks, or empty string if all pass.
 func getFailingChecks(repoDir, branch string) string {
 	cmd := exec.Command("gh", "pr", "checks", branch,
-		"--json", "name,conclusion,detailsUrl",
-		"-q", `.[] | select(.conclusion == "failure" or .conclusion == "startup_failure") | (.name + ": " + .detailsUrl)`)
+		"--json", "name,state,link",
+		"-q", `.[] | select(.state == "FAILURE") | (.name + ": " + .link)`)
 	cmd.Dir = repoDir
 	log.InfoLog.Printf("[github-actions] running: gh pr checks %s (dir=%s)", branch, repoDir)
 	out, err := cmd.CombinedOutput()
@@ -198,16 +198,30 @@ func getFailedRunLogs(repoDir, branch string) string {
 	return result
 }
 
-// getUnresolvedComments returns a summary of unresolved PR review comments.
+// getUnresolvedComments returns a summary of unresolved PR review comments via GraphQL.
 func getUnresolvedComments(repoDir string, prNumber int) string {
-	cmd := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", prNumber),
-		"--json", "reviewThreads",
-		"-q", `.reviewThreads[] | select(.isResolved == false) | .comments[0] | (.path + ":" + (.line|tostring) + " - " + .body)`)
+	query := fmt.Sprintf(`query {
+  repository(owner: "{owner}", name: "{repo}") {
+    pullRequest(number: %d) {
+      reviewThreads(first: 50) {
+        nodes {
+          isResolved
+          comments(first: 1) {
+            nodes { path line body }
+          }
+        }
+      }
+    }
+  }
+}`, prNumber)
+
+	cmd := exec.Command("gh", "api", "graphql", "-f", "query="+query,
+		"-q", `.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .comments.nodes[0] | (.path + ":" + (.line|tostring) + " - " + .body)`)
 	cmd.Dir = repoDir
-	log.InfoLog.Printf("[github-actions] running: gh pr view %d --json reviewThreads (dir=%s)", prNumber, repoDir)
+	log.InfoLog.Printf("[github-actions] running graphql reviewThreads query for PR #%d (dir=%s)", prNumber, repoDir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		log.InfoLog.Printf("[github-actions] gh pr view reviewThreads failed: %v (output=%q)", err, string(out))
+		log.InfoLog.Printf("[github-actions] graphql reviewThreads failed: %v (output=%q)", err, string(out))
 		return ""
 	}
 	result := strings.TrimSpace(string(out))
