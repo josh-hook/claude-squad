@@ -2,6 +2,7 @@ package app
 
 import (
 	"claude-squad/config"
+	"claude-squad/extensions"
 	"claude-squad/keys"
 	"claude-squad/log"
 	"claude-squad/session"
@@ -112,6 +113,9 @@ type home struct {
 	textOverlay *overlay.TextOverlay
 	// confirmationOverlay displays confirmation modals
 	confirmationOverlay *overlay.ConfirmationOverlay
+
+	// extensionManager runs background extensions against idle instances
+	extensionManager *extensions.ExtensionManager
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -163,6 +167,12 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 			instance.AutoYes = true
 		}
 	}
+
+	// Start the extension manager to monitor idle instances in the background.
+	h.extensionManager = extensions.NewExtensionManager(func() []*session.Instance {
+		return h.list.GetInstances()
+	})
+	h.extensionManager.Start()
 
 	return h
 }
@@ -391,6 +401,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *home) handleQuit() (tea.Model, tea.Cmd) {
+	if m.extensionManager != nil {
+		m.extensionManager.Stop()
+	}
 	if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
 		return m, m.handleError(err)
 	}
