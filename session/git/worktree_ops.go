@@ -49,13 +49,15 @@ func (g *GitWorktree) Setup() error {
 		}
 	}
 
-	// Set baseCommitSHA to the default branch tip for accurate diffs.
-	// This shows changes relative to main/master rather than the commit
-	// the branch was created from.
+	// Set baseCommitSHA to the merge-base between the worktree branch and origin/main.
+	// This gives a PR-style diff: only the changes on the branch, not changes on main
+	// since the branch was created.
 	if g.baseCommitSHA == "" {
-		if sha, err := g.runGitCommand(g.repoPath, "rev-parse", fmt.Sprintf("origin/%s", defaultBranch)); err == nil {
+		originRef := fmt.Sprintf("origin/%s", defaultBranch)
+		if sha, err := g.runGitCommand(g.worktreePath, "merge-base", originRef, "HEAD"); err == nil {
 			g.baseCommitSHA = strings.TrimSpace(sha)
-		} else if sha, err := g.runGitCommand(g.repoPath, "rev-parse", defaultBranch); err == nil {
+		} else if sha, err := g.runGitCommand(g.repoPath, "rev-parse", originRef); err == nil {
+			// Fallback: use origin/main directly if merge-base fails
 			g.baseCommitSHA = strings.TrimSpace(sha)
 		}
 	}
