@@ -63,8 +63,16 @@ func (m *ExtensionManager) run() {
 
 func (m *ExtensionManager) tick() {
 	instances := m.instances()
+
+	var idle []string
 	for _, inst := range instances {
-		// Only check idle instances (claude finished, waiting for input).
+		if inst.Status == session.Ready && inst.Started() && !inst.Paused() {
+			idle = append(idle, inst.Title)
+		}
+	}
+	log.InfoLog.Printf("[extensions] tick: %d instances, %d idle %v", len(instances), len(idle), idle)
+
+	for _, inst := range instances {
 		if inst.Status != session.Ready {
 			continue
 		}
@@ -73,9 +81,10 @@ func (m *ExtensionManager) tick() {
 		}
 
 		for _, ext := range m.extensions {
+			log.InfoLog.Printf("[extensions] running %s on %q", ext.Name(), inst.Title)
 			if ext.Check(inst) {
 				log.InfoLog.Printf("[extensions] %s prompted instance %q", ext.Name(), inst.Title)
-				break // skip remaining extensions for this instance
+				break
 			}
 		}
 	}
