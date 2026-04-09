@@ -94,8 +94,10 @@ func (t *TmuxSession) Start(workDir string) error {
 		return fmt.Errorf("tmux session already exists: %s", t.sanitizedName)
 	}
 
-	// Create a new detached tmux session and start claude in it
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", t.sanitizedName, "-c", workDir, t.program)
+	// Create a new detached tmux session with a plain shell.
+	// The program is sent as keystrokes after the session starts,
+	// so the session survives if the program exits.
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", t.sanitizedName, "-c", workDir)
 
 	ptmx, err := t.ptyFactory.Start(cmd)
 	if err != nil {
@@ -147,6 +149,20 @@ func (t *TmuxSession) Start(workDir string) error {
 			err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
 		}
 		return fmt.Errorf("error restoring tmux session: %w", err)
+	}
+
+	// Send the program command to the shell running in the tmux session.
+	// This way the session's shell survives if the program exits, allowing
+	// automatic resume via the resume command detection.
+	if t.program != "" {
+		time.Sleep(100 * time.Millisecond) // let the shell initialize
+		if err := t.SendKeys(t.program); err != nil {
+			return fmt.Errorf("error sending program command: %w", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+		if err := t.TapEnter(); err != nil {
+			return fmt.Errorf("error sending enter for program: %w", err)
+		}
 	}
 
 	return nil
