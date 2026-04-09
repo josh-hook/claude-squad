@@ -117,9 +117,9 @@ func getPRInfo(repoDir, branch string) (*prInfo, error) {
 	cmd := exec.Command("gh", "pr", "view", branch, "--json", "number,isDraft")
 	cmd.Dir = repoDir
 	log.InfoLog.Printf("[github-actions] running: gh pr view %s --json number,isDraft (dir=%s)", branch, repoDir)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%v (output=%s)", err, string(out))
 	}
 
 	var result struct {
@@ -140,9 +140,9 @@ func getFailingChecks(repoDir, branch string) string {
 		"-q", `.[] | select(.conclusion == "failure" or .conclusion == "startup_failure") | (.name + ": " + .detailsUrl)`)
 	cmd.Dir = repoDir
 	log.InfoLog.Printf("[github-actions] running: gh pr checks %s (dir=%s)", branch, repoDir)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		log.InfoLog.Printf("[github-actions] gh pr checks failed: %v", err)
+		log.InfoLog.Printf("[github-actions] gh pr checks failed: %v (output=%q)", err, string(out))
 		return ""
 	}
 	result := strings.TrimSpace(string(out))
@@ -170,9 +170,9 @@ func getFailedRunLogs(repoDir, branch string) string {
 		"-q", ".[0].databaseId")
 	cmd.Dir = repoDir
 	log.InfoLog.Printf("[github-actions] running: gh run list --branch %s --status failure", branch)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		log.InfoLog.Printf("[github-actions] gh run list failed: %v", err)
+		log.InfoLog.Printf("[github-actions] gh run list failed: %v (output=%q)", err, string(out))
 		return ""
 	}
 	runID := strings.TrimSpace(string(out))
@@ -184,9 +184,9 @@ func getFailedRunLogs(repoDir, branch string) string {
 	log.InfoLog.Printf("[github-actions] fetching logs for failed run %s", runID)
 	logCmd := exec.Command("gh", "run", "view", runID, "--log-failed")
 	logCmd.Dir = repoDir
-	logOut, err := logCmd.Output()
+	logOut, err := logCmd.CombinedOutput()
 	if err != nil {
-		log.InfoLog.Printf("[github-actions] gh run view --log-failed failed: %v", err)
+		log.InfoLog.Printf("[github-actions] gh run view --log-failed failed: %v (output=%q)", err, string(logOut))
 		return ""
 	}
 
@@ -205,9 +205,9 @@ func getUnresolvedComments(repoDir string, prNumber int) string {
 		"-q", `.reviewThreads[] | select(.isResolved == false) | .comments[0] | (.path + ":" + (.line|tostring) + " - " + .body)`)
 	cmd.Dir = repoDir
 	log.InfoLog.Printf("[github-actions] running: gh pr view %d --json reviewThreads (dir=%s)", prNumber, repoDir)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		log.InfoLog.Printf("[github-actions] gh pr view reviewThreads failed: %v", err)
+		log.InfoLog.Printf("[github-actions] gh pr view reviewThreads failed: %v (output=%q)", err, string(out))
 		return ""
 	}
 	result := strings.TrimSpace(string(out))
