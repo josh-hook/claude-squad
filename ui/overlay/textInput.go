@@ -112,7 +112,11 @@ func (t *TextInputOverlay) SetSize(width, height int) {
 		reserved += 8
 	}
 	if t.branchPicker != nil {
-		reserved += 3 // single-line branch display + divider
+		if t.isBranchPicker() {
+			reserved += 8 // expanded picker when focused
+		} else {
+			reserved += 3 // single-line display
+		}
 	}
 	textareaHeight := height - reserved
 	if textareaHeight < 2 {
@@ -368,16 +372,20 @@ func (t *TextInputOverlay) Render() string {
 	content += tiTitleStyle.Render(t.Title) + "\n"
 	content += t.textarea.View() + "\n\n"
 
-	// Render branch as a single line showing the selected branch
+	// Render branch section: full picker when focused, single line otherwise
 	if t.branchPicker != nil {
-		branchName := t.branchPicker.GetSelectedBranch()
-		if branchName == "" {
-			branchName = "New branch (from HEAD)"
-		}
-		branchLabel := tiTitleStyle.Render("Branch: ") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#c4b5fd")).Render(branchName)
 		content += divider + "\n\n"
-		content += branchLabel + "\n\n"
+		if t.isBranchPicker() {
+			content += t.branchPicker.Render() + "\n\n"
+		} else {
+			branchName := t.branchPicker.GetSelectedBranch()
+			if branchName == "" {
+				branchName = "New branch (from HEAD)"
+			}
+			branchLabel := tiTitleStyle.Render("Branch: ") +
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#c4b5fd")).Render(branchName)
+			content += branchLabel + "\n\n"
+		}
 	}
 
 	content += divider + "\n\n"
