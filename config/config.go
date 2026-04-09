@@ -32,6 +32,16 @@ type Profile struct {
 	Program string `json:"program"`
 }
 
+// TriggerConfig holds settings for the Linear trigger daemon.
+type TriggerConfig struct {
+	// AssigneeEmail is the Linear user email to fetch issues for.
+	AssigneeEmail string `json:"assignee_email"`
+	// RepoPath is the local repository path where sessions are created.
+	RepoPath string `json:"repo_path"`
+	// PollInterval is how often (in seconds) to poll Linear. Defaults to 60.
+	PollInterval int `json:"poll_interval,omitempty"`
+}
+
 // Config represents the application configuration
 type Config struct {
 	// DefaultProgram is the default program to run in new instances
@@ -44,6 +54,8 @@ type Config struct {
 	BranchPrefix string `json:"branch_prefix"`
 	// Profiles is a list of named program profiles.
 	Profiles []Profile `json:"profiles,omitempty"`
+	// Trigger configures the Linear trigger daemon.
+	Trigger *TriggerConfig `json:"trigger,omitempty"`
 }
 
 // GetProgram returns the program to run. If Profiles is non-empty and

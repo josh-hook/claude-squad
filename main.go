@@ -9,6 +9,7 @@ import (
 	"claude-squad/session"
 	"claude-squad/session/git"
 	"claude-squad/session/tmux"
+	"claude-squad/trigger"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -131,6 +132,18 @@ var (
 			fmt.Printf("https://github.com/smtg-ai/claude-squad/releases/tag/v%s\n", version)
 		},
 	}
+
+	triggerCmd = &cobra.Command{
+		Use:   "trigger",
+		Short: "Run the trigger daemon that polls Linear for ready issues and creates sessions",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			log.Initialize(true)
+			defer log.Close()
+
+			cfg := config.LoadConfig()
+			return trigger.RunTriggerDaemon(cfg)
+		},
+	}
 )
 
 func init() {
@@ -150,6 +163,7 @@ func init() {
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(resetCmd)
+	rootCmd.AddCommand(triggerCmd)
 }
 
 func main() {
