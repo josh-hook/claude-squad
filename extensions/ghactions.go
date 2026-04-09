@@ -198,10 +198,33 @@ func getFailedRunLogs(repoDir, branch string) string {
 	return result
 }
 
+// getRepoNWO returns the "owner/repo" string for the given directory using gh.
+func getRepoNWO(repoDir string) (string, error) {
+	cmd := exec.Command("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
+	cmd.Dir = repoDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%v (output=%s)", err, string(out))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // getUnresolvedComments returns a summary of unresolved PR review comments via GraphQL.
 func getUnresolvedComments(repoDir string, prNumber int) string {
+	nwo, err := getRepoNWO(repoDir)
+	if err != nil {
+		log.InfoLog.Printf("[github-actions] failed to get repo owner/name: %v", err)
+		return ""
+	}
+	parts := strings.SplitN(nwo, "/", 2)
+	if len(parts) != 2 {
+		log.InfoLog.Printf("[github-actions] unexpected repo format: %q", nwo)
+		return ""
+	}
+	owner, repo := parts[0], parts[1]
+
 	query := fmt.Sprintf(`query {
-  repository(owner: "{owner}", name: "{repo}") {
+  repository(owner: %q, name: %q) {
     pullRequest(number: %d) {
       reviewThreads(first: 50) {
         nodes {
@@ -213,12 +236,12 @@ func getUnresolvedComments(repoDir string, prNumber int) string {
       }
     }
   }
-}`, prNumber)
+}`, owner, repo, prNumber)
 
 	cmd := exec.Command("gh", "api", "graphql", "-f", "query="+query,
 		"-q", `.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .comments.nodes[0] | (.path + ":" + (.line|tostring) + " - " + .body)`)
 	cmd.Dir = repoDir
-	log.InfoLog.Printf("[github-actions] running graphql reviewThreads query for PR #%d (dir=%s)", prNumber, repoDir)
+	log.InfoLog.Printf("[github-actions] running graphql reviewThreads query for %s PR #%d", nwo, prNumber)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.InfoLog.Printf("[github-actions] graphql reviewThreads failed: %v (output=%q)", err, string(out))
