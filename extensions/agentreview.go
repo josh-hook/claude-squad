@@ -87,7 +87,7 @@ func (e *AgentReviewExtension) Check(inst *session.Instance) bool {
 	log.InfoLog.Printf("[agent-review] %q: new commit %s (last reviewed: %s), prompting review",
 		inst.Title, headSHA[:8], truncSHA(lastReviewed))
 
-	prompt := "Run the code review subagent on this PR, act on any of its feedback."
+	prompt := "Run the pr-reviewer subagent on this PR, act on any of its feedback."
 	if err := inst.SendPrompt(prompt); err != nil {
 		log.ErrorLog.Printf("[agent-review] %q: failed to send prompt: %v", inst.Title, err)
 		return false
