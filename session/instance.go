@@ -346,6 +346,43 @@ func (i *Instance) HasUpdated() (updated bool, hasPrompt bool) {
 	return i.tmuxSession.HasUpdated()
 }
 
+// CheckAndHandleResumePrompt checks if Claude exited and left a "Resume this session with:"
+// message. If found, it automatically sends the resume command to restart the session.
+// Returns true if a resume command was detected and sent.
+func (i *Instance) CheckAndHandleResumePrompt() bool {
+	if !i.started || i.tmuxSession == nil {
+		return false
+	}
+	if !strings.HasSuffix(i.Program, "claude") {
+		return false
+	}
+
+	content, err := i.tmuxSession.CapturePaneContent()
+	if err != nil {
+		return false
+	}
+
+	if !strings.Contains(content, "Resume this session with:") {
+		return false
+	}
+
+	match := tmux.ResumeRegex.FindString(content)
+	if match == "" {
+		return false
+	}
+
+	log.InfoLog.Printf("detected claude exit with resume command: %s", match)
+	if err := i.tmuxSession.SendKeys(match); err != nil {
+		log.ErrorLog.Printf("failed to send resume command: %v", err)
+		return false
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := i.tmuxSession.TapEnter(); err != nil {
+		log.ErrorLog.Printf("failed to tap enter for resume: %v", err)
+	}
+	return true
+}
+
 // CheckAndHandleTrustPrompt checks for and dismisses the trust prompt for supported programs.
 func (i *Instance) CheckAndHandleTrustPrompt() bool {
 	if !i.started || i.tmuxSession == nil {

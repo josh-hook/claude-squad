@@ -253,7 +253,10 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case metadataUpdateDoneMsg:
 		for _, r := range msg.results {
-			if r.updated {
+			// Check if Claude exited with a resume prompt — restart it automatically.
+			if r.instance.CheckAndHandleResumePrompt() {
+				r.instance.SetStatus(session.Running)
+			} else if r.updated {
 				r.instance.SetStatus(session.Running)
 			} else if r.hasPrompt {
 				r.instance.TapEnter()
