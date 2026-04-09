@@ -350,8 +350,11 @@ func (l *List) Kill() {
 		l.rmRepo(repoName)
 	}
 
-	// Since there's items after this, the selectedIdx can stay the same.
+	// Remove the item and clamp selectedIdx to stay in bounds.
 	l.items = append(l.items[:l.selectedIdx], l.items[l.selectedIdx+1:]...)
+	if l.selectedIdx >= len(l.items) && len(l.items) > 0 {
+		l.selectedIdx = len(l.items) - 1
+	}
 }
 
 func (l *List) Attach() (chan struct{}, error) {
@@ -420,6 +423,9 @@ func (l *List) AddInstance(instance *session.Instance) (finalize func()) {
 func (l *List) GetSelectedInstance() *session.Instance {
 	if len(l.items) == 0 {
 		return nil
+	}
+	if l.selectedIdx >= len(l.items) {
+		l.selectedIdx = len(l.items) - 1
 	}
 	return l.items[l.selectedIdx]
 }
