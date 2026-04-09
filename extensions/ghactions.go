@@ -133,13 +133,31 @@ func getPRInfo(repoDir, branch string) (*prInfo, error) {
 	return &prInfo{number: result.Number, isDraft: result.IsDraft}, nil
 }
 
-// getFailingChecks returns a summary of failing CI checks, or empty string if all pass.
+// getFailingChecks returns a summary of failing CI checks, or empty string if all pass
+// or if any checks are still pending/in-progress.
 func getFailingChecks(repoDir, branch string) string {
+	// First check if any checks are still pending or in progress.
+	pendingCmd := exec.Command("gh", "pr", "checks", branch,
+		"--json", "name,state",
+		"-q", `.[] | select(.state == "PENDING" or .state == "IN_PROGRESS" or .state == "QUEUED" or .state == "REQUESTED" or .state == "") | .name`)
+	pendingCmd.Dir = repoDir
+	log.InfoLog.Printf("[github-actions] checking for pending checks on %s", branch)
+	pendingOut, err := pendingCmd.CombinedOutput()
+	if err != nil {
+		log.InfoLog.Printf("[github-actions] gh pr checks (pending) failed: %v (output=%q)", err, string(pendingOut))
+		return ""
+	}
+	if pending := strings.TrimSpace(string(pendingOut)); pending != "" {
+		log.InfoLog.Printf("[github-actions] checks still running for %s, waiting: %s", branch, pending)
+		return ""
+	}
+
+	// All checks have completed — now collect failures.
 	cmd := exec.Command("gh", "pr", "checks", branch,
 		"--json", "name,state,link",
 		"-q", `.[] | select(.state == "FAILURE") | (.name + ": " + .link)`)
 	cmd.Dir = repoDir
-	log.InfoLog.Printf("[github-actions] running: gh pr checks %s (dir=%s)", branch, repoDir)
+	log.InfoLog.Printf("[github-actions] collecting failing checks for %s", branch)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.InfoLog.Printf("[github-actions] gh pr checks failed: %v (output=%q)", err, string(out))
