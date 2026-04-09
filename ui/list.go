@@ -223,14 +223,20 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 
 	branchLine := fmt.Sprintf("%s %s-%s%s%s", strings.Repeat(" ", len(prefix)), branchIcon, branch, spaces, diff)
 
-	// join title and subtitle
-	text := lipgloss.JoinVertical(
-		lipgloss.Left,
-		title,
-		descS.Render(branchLine),
-	)
+	// join title, branch, and optional PR link
+	lines := []string{title, descS.Render(branchLine)}
+	if i.PRURL != "" {
+		prLine := fmt.Sprintf("%s %s", strings.Repeat(" ", len(prefix)), i.PRURL)
+		prStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#5f87ff")).
+			Padding(0, 1, 0, 0)
+		if selected {
+			prStyle = prStyle.Background(descS.GetBackground())
+		}
+		lines = append(lines, prStyle.Render(prLine))
+	}
 
-	return text
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 func (l *List) String() string {

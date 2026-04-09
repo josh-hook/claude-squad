@@ -62,6 +62,10 @@ func (e *AgentReviewExtension) Check(inst *session.Instance) bool {
 		log.InfoLog.Printf("[agent-review] %q: no PR for branch %s", inst.Title, branch)
 		return false
 	}
+	if pr.url != "" {
+		inst.PRURL = pr.url
+	}
+
 	if pr.isDraft {
 		log.InfoLog.Printf("[agent-review] %q: PR #%d is draft, skipping", inst.Title, pr.number)
 		return false

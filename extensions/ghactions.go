@@ -53,6 +53,11 @@ func (e *GHActionsExtension) Check(inst *session.Instance) bool {
 		log.InfoLog.Printf("[github-actions] %q: no PR exists for branch %s", inst.Title, branch)
 		return false
 	}
+	// Cache the PR URL on the instance for display in the UI.
+	if pr.url != "" {
+		inst.PRURL = pr.url
+	}
+
 	if pr.isDraft {
 		log.InfoLog.Printf("[github-actions] %q: PR #%d is draft, skipping", inst.Title, pr.number)
 		return false
@@ -110,27 +115,29 @@ func (e *GHActionsExtension) buildPrompt(repoDir, branch string, prNumber int) s
 type prInfo struct {
 	number  int
 	isDraft bool
+	url     string
 }
 
 // getPRInfo fetches PR info for the given branch. Returns nil if no PR exists.
 func getPRInfo(repoDir, branch string) (*prInfo, error) {
-	cmd := exec.Command("gh", "pr", "view", branch, "--json", "number,isDraft")
+	cmd := exec.Command("gh", "pr", "view", branch, "--json", "number,isDraft,url")
 	cmd.Dir = repoDir
-	log.InfoLog.Printf("[github-actions] running: gh pr view %s --json number,isDraft (dir=%s)", branch, repoDir)
+	log.InfoLog.Printf("[github-actions] running: gh pr view %s --json number,isDraft,url (dir=%s)", branch, repoDir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("%v (output=%s)", err, string(out))
 	}
 
 	var result struct {
-		Number  int  `json:"number"`
-		IsDraft bool `json:"isDraft"`
+		Number  int    `json:"number"`
+		IsDraft bool   `json:"isDraft"`
+		URL     string `json:"url"`
 	}
 	if err := json.Unmarshal(out, &result); err != nil {
 		log.ErrorLog.Printf("[github-actions] failed to parse PR info: %v (output=%q)", err, string(out))
 		return nil, err
 	}
-	return &prInfo{number: result.Number, isDraft: result.IsDraft}, nil
+	return &prInfo{number: result.Number, isDraft: result.IsDraft, url: result.URL}, nil
 }
 
 // getFailingChecks returns a summary of failing CI checks, or empty string if all pass

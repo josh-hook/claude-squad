@@ -63,6 +63,8 @@ type Instance struct {
 	OriginalPrompt string
 	// LastActiveAt tracks the last time this instance was interacted with or was running.
 	LastActiveAt time.Time
+	// PRURL is the GitHub PR URL for this instance's branch, if one exists.
+	PRURL string
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
