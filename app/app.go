@@ -186,8 +186,9 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 
 	// Menu takes 10% of height, list and window take 90%
 	contentHeight := int(float32(msg.Height) * 0.9)
-	menuHeight := msg.Height - contentHeight - 1     // minus 1 for error box
-	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
+	errBoxHeight := 3
+	menuHeight := msg.Height - contentHeight - errBoxHeight
+	m.errBox.SetSize(int(float32(msg.Width)*0.9), errBoxHeight)
 
 	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
 	m.list.SetSize(listWidth, contentHeight)
@@ -1107,7 +1108,7 @@ func (m *home) handleError(err error) tea.Cmd {
 	return func() tea.Msg {
 		select {
 		case <-m.ctx.Done():
-		case <-time.After(3 * time.Second):
+		case <-time.After(30 * time.Second):
 		}
 
 		return hideErrMsg{}
