@@ -61,6 +61,8 @@ type Instance struct {
 	Prompt string
 	// OriginalPrompt is a copy of the initial prompt, preserved for display after sending.
 	OriginalPrompt string
+	// LastActiveAt tracks the last time this instance was interacted with or was running.
+	LastActiveAt time.Time
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
@@ -193,6 +195,7 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		Width:          0,
 		CreatedAt:      t,
 		UpdatedAt:      t,
+		LastActiveAt:   t,
 		AutoYes:        false,
 		selectedBranch: opts.Branch,
 	}, nil
@@ -215,6 +218,22 @@ func (i *Instance) GetRepoPath() string {
 
 func (i *Instance) SetStatus(status Status) {
 	i.Status = status
+	if status == Running || status == Loading {
+		i.LastActiveAt = time.Now()
+	}
+}
+
+// TouchActive marks the instance as recently interacted with.
+func (i *Instance) TouchActive() {
+	i.LastActiveAt = time.Now()
+}
+
+// IsIdle returns true if the instance is Ready and hasn't been active for the given duration.
+func (i *Instance) IsIdle(timeout time.Duration) bool {
+	if i.Status != Ready {
+		return false
+	}
+	return time.Since(i.LastActiveAt) > timeout
 }
 
 // SetSelectedBranch sets the branch to use when starting the instance.
@@ -716,6 +735,7 @@ func (i *Instance) SendPrompt(prompt string) error {
 		return fmt.Errorf("error tapping enter: %w", err)
 	}
 
+	i.TouchActive()
 	return nil
 }
 

@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
+
+const idleTimeout = 5 * time.Minute
 
 const readyIcon = "● "
 const pausedIcon = "⏸ "
@@ -52,6 +55,11 @@ var mainTitle = lipgloss.NewStyle().
 var autoYesStyle = lipgloss.NewStyle().
 	Background(lipgloss.Color("#dde4f0")).
 	Foreground(lipgloss.Color("#1a1a1a"))
+
+var sectionHeaderStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.Color("240")).
+	Bold(true).
+	PaddingLeft(1)
 
 type List struct {
 	items         []*session.Instance
@@ -229,13 +237,11 @@ func (l *List) String() string {
 	const titleText = " Instances "
 	const autoYesText = " auto-yes "
 
-	// Write the title.
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString("\n")
 
 	// Write title line
-	// add padding of 2 because the border on list items adds some extra characters
 	titleWidth := AdjustPreviewWidth(l.width) + 2
 	if !l.autoyes {
 		b.WriteString(lipgloss.Place(
@@ -250,15 +256,45 @@ func (l *List) String() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString("\n")
 
-	// Render the list.
+	// Split instances into active and idle.
+	var active, idle []int
 	for i, item := range l.items {
-		b.WriteString(l.renderer.Render(item, i+1, i == l.selectedIdx, len(l.repos) > 1))
-		if i != len(l.items)-1 {
-			b.WriteString("\n\n")
+		if item.IsIdle(idleTimeout) {
+			idle = append(idle, i)
+		} else {
+			active = append(active, i)
 		}
 	}
+
+	hasMultipleRepos := len(l.repos) > 1
+	num := 1
+
+	// Active section
+	if len(active) > 0 || len(idle) == 0 {
+		b.WriteString("\n")
+		b.WriteString(sectionHeaderStyle.Render("Active"))
+		b.WriteString("\n")
+		for _, i := range active {
+			b.WriteString(l.renderer.Render(l.items[i], num, i == l.selectedIdx, hasMultipleRepos))
+			b.WriteString("\n\n")
+			num++
+		}
+	}
+
+	// Idle section
+	if len(idle) > 0 {
+		b.WriteString(sectionHeaderStyle.Render("Idle"))
+		b.WriteString("\n")
+		for _, i := range idle {
+			b.WriteString(l.renderer.Render(l.items[i], num, i == l.selectedIdx, hasMultipleRepos))
+			if i != idle[len(idle)-1] {
+				b.WriteString("\n\n")
+			}
+			num++
+		}
+	}
+
 	return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top, b.String())
 }
 
@@ -303,6 +339,7 @@ func (l *List) Kill() {
 
 func (l *List) Attach() (chan struct{}, error) {
 	targetInstance := l.items[l.selectedIdx]
+	targetInstance.TouchActive()
 	return targetInstance.Attach()
 }
 
