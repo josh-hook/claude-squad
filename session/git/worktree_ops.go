@@ -79,8 +79,11 @@ func (g *GitWorktree) setupFromExistingBranch() error {
 		return nil
 	}
 
-	// Clean up any stale worktree reference (directory gone but git still tracks it)
-	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath)
+	// Prune stale worktree references and remove any existing worktree using this branch.
+	// This handles the case where a previous session created a worktree at a different
+	// path (e.g. with a different timestamp suffix) that still holds the branch.
+	_, _ = g.runGitCommand(g.repoPath, "worktree", "prune")
+	g.removeWorktreeForBranch()
 
 	// Check if the local branch exists
 	_, localErr := g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", g.branchName))
@@ -103,6 +106,30 @@ func (g *GitWorktree) setupFromExistingBranch() error {
 	}
 
 	return nil
+}
+
+// removeWorktreeForBranch finds and force-removes any existing worktree that has this branch checked out.
+func (g *GitWorktree) removeWorktreeForBranch() {
+	output, err := g.runGitCommand(g.repoPath, "worktree", "list", "--porcelain")
+	if err != nil {
+		return
+	}
+
+	// Parse porcelain output to find the worktree using our branch.
+	// Format: "worktree <path>\nHEAD <sha>\nbranch refs/heads/<name>\n\n"
+	branchRef := fmt.Sprintf("refs/heads/%s", g.branchName)
+	var currentPath string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			currentPath = strings.TrimPrefix(line, "worktree ")
+		} else if strings.HasPrefix(line, "branch ") {
+			ref := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
+			if ref == branchRef && currentPath != "" && currentPath != g.worktreePath {
+				log.InfoLog.Printf("removing old worktree at %s that holds branch %s", currentPath, g.branchName)
+				_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", currentPath)
+			}
+		}
+	}
 }
 
 // setupNewWorktree creates a new worktree from HEAD.
