@@ -19,6 +19,9 @@ import (
 // with optional quotes around the session identifier.
 var resumeRegex = regexp.MustCompile(`claude --resume "?([^\s"]+)"?`)
 
+// ansiRegex matches ANSI escape sequences.
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
 type Status int
 
 const (
@@ -411,11 +414,14 @@ func (i *Instance) CheckAndHandleResumePrompt() bool {
 		return false
 	}
 
-	if !strings.Contains(content, "Resume this session with:") {
+	// Strip ANSI escape sequences so the regex doesn't pick up trailing codes (e.g. "m" from \x1b[0m).
+	plain := ansiRegex.ReplaceAllString(content, "")
+
+	if !strings.Contains(plain, "Resume this session with:") {
 		return false
 	}
 
-	match := resumeRegex.FindString(content)
+	match := resumeRegex.FindString(plain)
 	if match == "" {
 		return false
 	}

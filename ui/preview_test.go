@@ -197,17 +197,19 @@ func TestPreviewScrolling(t *testing.T) {
 					return buf, nil
 				}
 
+				preamble := "preamble-1\npreamble-2\npreamble-3\n"
+
 				// Check if this is a copy mode capture with full history (-S -)
 				if strings.Contains(cmdStr, "-S -") {
 					// Always return the full content for PreviewFullHistory
-					return []byte(fullContent), nil
+					return []byte(preamble + fullContent), nil
 				}
 
 				// Regular capture for normal preview mode - show the last 20 lines
 				const visibleLines = 20
 				startLine := max(0, numLines+1-visibleLines)
 				visibleContent := strings.Join(lines[startLine:], "\n")
-				return []byte(visibleContent), nil
+				return []byte(preamble + visibleContent), nil
 			}
 
 			return []byte(""), nil
@@ -344,10 +346,9 @@ func TestPreviewContentWithoutScrolling(t *testing.T) {
 		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
 			cmdStr := cmd.String()
 
-			// Handle capture-pane commands for normal preview
+			// Handle capture-pane commands — prepend preamble lines that get stripped
 			if strings.Contains(cmdStr, "capture-pane") {
-				// Return our test content for normal preview
-				return []byte(expectedContent), nil
+				return []byte("preamble-1\npreamble-2\npreamble-3\n" + expectedContent), nil
 			}
 
 			return []byte(""), nil

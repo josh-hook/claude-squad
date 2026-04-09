@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -439,35 +438,36 @@ func (t *TmuxSession) DoesSessionExist() bool {
 	return t.cmdExec.Run(existsCmd) == nil
 }
 
-// CapturePaneContent captures the content of the tmux pane
+// stripPreamble removes the first shellPreambleLines lines from the output
+// to hide the shell startup lines that appear because we launch programs via keystrokes.
+func stripPreamble(s string) string {
+	lines := strings.SplitN(s, "\n", shellPreambleLines+1)
+	if len(lines) <= shellPreambleLines {
+		return ""
+	}
+	return lines[shellPreambleLines]
+}
+
+// CapturePaneContent captures the content of the tmux pane, stripping shell preamble lines.
 func (t *TmuxSession) CapturePaneContent() (string, error) {
-	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-S", strconv.Itoa(shellPreambleLines), "-t", t.sanitizedName)
+	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("error capturing pane content: %v", err)
 	}
-	return string(output), nil
+	return stripPreamble(string(output)), nil
 }
 
-// CapturePaneContentWithOptions captures the pane content with additional options
+// CapturePaneContentWithOptions captures the pane content with additional options,
+// stripping shell preamble lines.
 // start and end specify the starting and ending line numbers (use "-" for the start/end of history)
 func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, error) {
-	// Offset the start line to skip the shell preamble, unless it's "-" (full history).
-	adjustedStart := start
-	if start != "-" {
-		startInt, err := strconv.Atoi(start)
-		if err != nil {
-			return "", fmt.Errorf("invalid start line number: %w", err)
-		}
-		adjustedStart = strconv.Itoa(startInt + shellPreambleLines)
-	}
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-S", adjustedStart, "-E", end, "-t", t.sanitizedName)
+	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.sanitizedName)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to capture tmux pane content with options: %v", err)
 	}
-	return string(output), nil
+	return stripPreamble(string(output)), nil
 }
 
 // CleanupSessions kills all tmux sessions that start with "session-"
