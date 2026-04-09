@@ -271,6 +271,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if r.updated {
 				r.instance.SetStatus(session.Running)
 			} else if r.hasPrompt {
+				r.instance.SetStatus(session.Running)
 				r.instance.TapEnter()
 			} else {
 				r.instance.SetStatus(session.Ready)
