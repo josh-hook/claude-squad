@@ -68,6 +68,10 @@ type List struct {
 	renderer      *InstanceRenderer
 	autoyes       bool
 
+	// displayOrder maps visual position (0 = top of list) to index in l.items.
+	// Rebuilt on each render: active items first, then idle items.
+	displayOrder []int
+
 	// map of repo name to number of instances using it. Used to display the repo name only if there are
 	// multiple repos in play.
 	repos map[string]int
@@ -263,7 +267,7 @@ func (l *List) String() string {
 
 	b.WriteString("\n")
 
-	// Split instances into active and idle.
+	// Split instances into active and idle, and rebuild display order.
 	var active, idle []int
 	for i, item := range l.items {
 		if item.IsIdle(idleTimeout) {
@@ -272,6 +276,8 @@ func (l *List) String() string {
 			active = append(active, i)
 		}
 	}
+	l.displayOrder = append(active[:0:0], active...)
+	l.displayOrder = append(l.displayOrder, idle...)
 
 	hasMultipleRepos := len(l.repos) > 1
 	num := 1
@@ -304,13 +310,14 @@ func (l *List) String() string {
 	return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top, b.String())
 }
 
-// Down selects the next item in the list.
+// Down selects the next item in display order (active first, then idle).
 func (l *List) Down() {
-	if len(l.items) == 0 {
+	if len(l.displayOrder) == 0 {
 		return
 	}
-	if l.selectedIdx < len(l.items)-1 {
-		l.selectedIdx++
+	pos := l.displayPos()
+	if pos < len(l.displayOrder)-1 {
+		l.selectedIdx = l.displayOrder[pos+1]
 	}
 }
 
@@ -326,10 +333,14 @@ func (l *List) Kill() {
 		log.ErrorLog.Printf("could not kill instance: %v", err)
 	}
 
-	// If you delete the last one in the list, select the previous one.
-	if l.selectedIdx == len(l.items)-1 {
-		defer l.Up()
-	}
+	// If this is the last item in display order, select the previous one after removal.
+	pos := l.displayPos()
+	isLastInDisplay := pos == len(l.displayOrder)-1
+	defer func() {
+		if isLastInDisplay && len(l.items) > 0 {
+			l.Up()
+		}
+	}()
 
 	// Unregister the reponame.
 	repoName, err := targetInstance.RepoName()
@@ -349,14 +360,25 @@ func (l *List) Attach() (chan struct{}, error) {
 	return targetInstance.Attach()
 }
 
-// Up selects the prev item in the list.
+// Up selects the previous item in display order (active first, then idle).
 func (l *List) Up() {
-	if len(l.items) == 0 {
+	if len(l.displayOrder) == 0 {
 		return
 	}
-	if l.selectedIdx > 0 {
-		l.selectedIdx--
+	pos := l.displayPos()
+	if pos > 0 {
+		l.selectedIdx = l.displayOrder[pos-1]
 	}
+}
+
+// displayPos returns the current position of selectedIdx in displayOrder.
+func (l *List) displayPos() int {
+	for i, idx := range l.displayOrder {
+		if idx == l.selectedIdx {
+			return i
+		}
+	}
+	return 0
 }
 
 func (l *List) addRepo(repo string) {
