@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
+
+const idleTimeout = 5 * time.Minute
 
 const readyIcon = "● "
 const pausedIcon = "⏸ "
@@ -53,12 +56,21 @@ var autoYesStyle = lipgloss.NewStyle().
 	Background(lipgloss.Color("#dde4f0")).
 	Foreground(lipgloss.Color("#1a1a1a"))
 
+var sectionHeaderStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.Color("240")).
+	Bold(true).
+	PaddingLeft(1)
+
 type List struct {
 	items         []*session.Instance
 	selectedIdx   int
 	height, width int
 	renderer      *InstanceRenderer
 	autoyes       bool
+
+	// displayOrder maps visual position (0 = top of list) to index in l.items.
+	// Rebuilt on each render: active items first, then idle items.
+	displayOrder []int
 
 	// map of repo name to number of instances using it. Used to display the repo name only if there are
 	// multiple repos in play.
@@ -215,27 +227,31 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 
 	branchLine := fmt.Sprintf("%s %s-%s%s%s", strings.Repeat(" ", len(prefix)), branchIcon, branch, spaces, diff)
 
-	// join title and subtitle
-	text := lipgloss.JoinVertical(
-		lipgloss.Left,
-		title,
-		descS.Render(branchLine),
-	)
+	// join title, branch, and optional PR link
+	lines := []string{title, descS.Render(branchLine)}
+	if i.PRURL != "" {
+		prLine := fmt.Sprintf("%s %s", strings.Repeat(" ", len(prefix)), i.PRURL)
+		prStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#5f87ff")).
+			Padding(0, 1, 0, 0)
+		if selected {
+			prStyle = prStyle.Background(descS.GetBackground())
+		}
+		lines = append(lines, prStyle.Render(prLine))
+	}
 
-	return text
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 func (l *List) String() string {
 	const titleText = " Instances "
 	const autoYesText = " auto-yes "
 
-	// Write the title.
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString("\n")
 
 	// Write title line
-	// add padding of 2 because the border on list items adds some extra characters
 	titleWidth := AdjustPreviewWidth(l.width) + 2
 	if !l.autoyes {
 		b.WriteString(lipgloss.Place(
@@ -250,25 +266,58 @@ func (l *List) String() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString("\n")
 
-	// Render the list.
+	// Split instances into active and idle, and rebuild display order.
+	var active, idle []int
 	for i, item := range l.items {
-		b.WriteString(l.renderer.Render(item, i+1, i == l.selectedIdx, len(l.repos) > 1))
-		if i != len(l.items)-1 {
-			b.WriteString("\n\n")
+		if item.IsIdle(idleTimeout) {
+			idle = append(idle, i)
+		} else {
+			active = append(active, i)
 		}
 	}
+	l.displayOrder = append(active[:0:0], active...)
+	l.displayOrder = append(l.displayOrder, idle...)
+
+	hasMultipleRepos := len(l.repos) > 1
+	num := 1
+
+	// Active section
+	if len(active) > 0 || len(idle) == 0 {
+		b.WriteString("\n")
+		b.WriteString(sectionHeaderStyle.Render("Active"))
+		b.WriteString("\n")
+		for _, i := range active {
+			b.WriteString(l.renderer.Render(l.items[i], num, i == l.selectedIdx, hasMultipleRepos))
+			b.WriteString("\n\n")
+			num++
+		}
+	}
+
+	// Idle section
+	if len(idle) > 0 {
+		b.WriteString(sectionHeaderStyle.Render("Idle"))
+		b.WriteString("\n")
+		for _, i := range idle {
+			b.WriteString(l.renderer.Render(l.items[i], num, i == l.selectedIdx, hasMultipleRepos))
+			if i != idle[len(idle)-1] {
+				b.WriteString("\n\n")
+			}
+			num++
+		}
+	}
+
 	return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top, b.String())
 }
 
-// Down selects the next item in the list.
+// Down selects the next item in display order (active first, then idle).
 func (l *List) Down() {
-	if len(l.items) == 0 {
+	if len(l.displayOrder) == 0 {
 		return
 	}
-	if l.selectedIdx < len(l.items)-1 {
-		l.selectedIdx++
+	pos := l.displayPos()
+	if pos < len(l.displayOrder)-1 {
+		l.selectedIdx = l.displayOrder[pos+1]
 	}
 }
 
@@ -284,10 +333,14 @@ func (l *List) Kill() {
 		log.ErrorLog.Printf("could not kill instance: %v", err)
 	}
 
-	// If you delete the last one in the list, select the previous one.
-	if l.selectedIdx == len(l.items)-1 {
-		defer l.Up()
-	}
+	// If this is the last item in display order, select the previous one after removal.
+	pos := l.displayPos()
+	isLastInDisplay := pos == len(l.displayOrder)-1
+	defer func() {
+		if isLastInDisplay && len(l.items) > 0 {
+			l.Up()
+		}
+	}()
 
 	// Unregister the reponame.
 	repoName, err := targetInstance.RepoName()
@@ -297,23 +350,38 @@ func (l *List) Kill() {
 		l.rmRepo(repoName)
 	}
 
-	// Since there's items after this, the selectedIdx can stay the same.
+	// Remove the item and clamp selectedIdx to stay in bounds.
 	l.items = append(l.items[:l.selectedIdx], l.items[l.selectedIdx+1:]...)
+	if l.selectedIdx >= len(l.items) && len(l.items) > 0 {
+		l.selectedIdx = len(l.items) - 1
+	}
 }
 
 func (l *List) Attach() (chan struct{}, error) {
 	targetInstance := l.items[l.selectedIdx]
+	targetInstance.TouchActive()
 	return targetInstance.Attach()
 }
 
-// Up selects the prev item in the list.
+// Up selects the previous item in display order (active first, then idle).
 func (l *List) Up() {
-	if len(l.items) == 0 {
+	if len(l.displayOrder) == 0 {
 		return
 	}
-	if l.selectedIdx > 0 {
-		l.selectedIdx--
+	pos := l.displayPos()
+	if pos > 0 {
+		l.selectedIdx = l.displayOrder[pos-1]
 	}
+}
+
+// displayPos returns the current position of selectedIdx in displayOrder.
+func (l *List) displayPos() int {
+	for i, idx := range l.displayOrder {
+		if idx == l.selectedIdx {
+			return i
+		}
+	}
+	return 0
 }
 
 func (l *List) addRepo(repo string) {
@@ -355,6 +423,9 @@ func (l *List) AddInstance(instance *session.Instance) (finalize func()) {
 func (l *List) GetSelectedInstance() *session.Instance {
 	if len(l.items) == 0 {
 		return nil
+	}
+	if l.selectedIdx >= len(l.items) {
+		l.selectedIdx = len(l.items) - 1
 	}
 	return l.items[l.selectedIdx]
 }

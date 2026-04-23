@@ -13,6 +13,18 @@ var (
 	AdditionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#22c55e"))
 	DeletionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ef4444"))
 	HunkStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#0ea5e9"))
+
+	fileBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("240")).
+			Padding(0, 1)
+
+	fileNameStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#c4b5fd"))
+
+	statsBarStyle = lipgloss.NewStyle().
+			MarginBottom(1)
 )
 
 type DiffPane struct {
@@ -34,7 +46,6 @@ func (d *DiffPane) SetSize(width, height int) {
 	d.height = height
 	d.viewport.Width = width
 	d.viewport.Height = height
-	// Update viewport content if diff exists
 	if d.diff != "" || d.stats != "" {
 		d.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, d.stats, d.diff))
 	}
@@ -56,7 +67,6 @@ func (d *DiffPane) SetDiff(instance *session.Instance) {
 
 	stats := instance.GetDiffStats()
 	if stats == nil {
-		// Show loading message if worktree is not ready
 		centeredMessage := lipgloss.Place(
 			d.width,
 			d.height,
@@ -69,7 +79,6 @@ func (d *DiffPane) SetDiff(instance *session.Instance) {
 	}
 
 	if stats.Error != nil {
-		// Show error message
 		centeredMessage := lipgloss.Place(
 			d.width,
 			d.height,
@@ -86,10 +95,11 @@ func (d *DiffPane) SetDiff(instance *session.Instance) {
 		d.diff = ""
 		d.viewport.SetContent(centeredFallbackMessage)
 	} else {
-		additions := AdditionStyle.Render(fmt.Sprintf("%d additions(+)", stats.Added))
-		deletions := DeletionStyle.Render(fmt.Sprintf("%d deletions(-)", stats.Removed))
-		d.stats = lipgloss.JoinHorizontal(lipgloss.Center, additions, " ", deletions)
-		d.diff = colorizeDiff(stats.Content)
+		additions := AdditionStyle.Render(fmt.Sprintf(" +%d ", stats.Added))
+		deletions := DeletionStyle.Render(fmt.Sprintf(" -%d ", stats.Removed))
+		d.stats = statsBarStyle.Render(
+			lipgloss.JoinHorizontal(lipgloss.Center, additions, " ", deletions))
+		d.diff = formatDiff(stats.Content, d.width)
 		d.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, d.stats, d.diff))
 	}
 }
@@ -98,40 +108,99 @@ func (d *DiffPane) String() string {
 	return d.viewport.View()
 }
 
-// ScrollUp scrolls the viewport up
 func (d *DiffPane) ScrollUp() {
 	d.viewport.LineUp(1)
 }
 
-// ScrollDown scrolls the viewport down
 func (d *DiffPane) ScrollDown() {
 	d.viewport.LineDown(1)
 }
 
-func colorizeDiff(diff string) string {
-	var coloredOutput strings.Builder
+// fileDiff represents the diff for a single file.
+type fileDiff struct {
+	name  string
+	lines []string
+}
 
-	lines := strings.Split(diff, "\n")
-	for _, line := range lines {
-		if len(line) > 0 {
-			if strings.HasPrefix(line, "@@") {
-				// Color hunk headers cyan
-				coloredOutput.WriteString(HunkStyle.Render(line) + "\n")
-			} else if line[0] == '+' && (len(line) == 1 || line[1] != '+') {
-				// Color added lines green, excluding metadata like '+++'
-				coloredOutput.WriteString(AdditionStyle.Render(line) + "\n")
-			} else if line[0] == '-' && (len(line) == 1 || line[1] != '-') {
-				// Color removed lines red, excluding metadata like '---'
-				coloredOutput.WriteString(DeletionStyle.Render(line) + "\n")
-			} else {
-				// Print metadata and unchanged lines without color
-				coloredOutput.WriteString(line + "\n")
+// parseDiff splits raw unified diff output into per-file chunks,
+// stripping the diff --git, --- a/..., +++ b/... metadata lines.
+func parseDiff(raw string) []fileDiff {
+	var files []fileDiff
+	var current *fileDiff
+
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.HasPrefix(line, "diff --git") {
+			// Extract filename from "diff --git a/path b/path"
+			parts := strings.SplitN(line, " b/", 2)
+			name := ""
+			if len(parts) == 2 {
+				name = parts[1]
 			}
-		} else {
-			// Preserve empty lines
-			coloredOutput.WriteString("\n")
+			files = append(files, fileDiff{name: name})
+			current = &files[len(files)-1]
+			continue
 		}
+		if current == nil {
+			continue
+		}
+		// Skip --- and +++ metadata lines
+		if strings.HasPrefix(line, "--- a/") || strings.HasPrefix(line, "--- /dev/null") ||
+			strings.HasPrefix(line, "+++ b/") || strings.HasPrefix(line, "+++ /dev/null") {
+			continue
+		}
+		// Skip index lines like "index abc123..def456 100644"
+		if strings.HasPrefix(line, "index ") {
+			continue
+		}
+		// Skip mode lines
+		if strings.HasPrefix(line, "old mode") || strings.HasPrefix(line, "new mode") ||
+			strings.HasPrefix(line, "new file mode") || strings.HasPrefix(line, "deleted file mode") {
+			continue
+		}
+		current.lines = append(current.lines, line)
+	}
+	return files
+}
+
+// formatDiff renders the full diff with per-file boxes.
+func formatDiff(raw string, width int) string {
+	files := parseDiff(raw)
+	if len(files) == 0 {
+		return ""
 	}
 
-	return coloredOutput.String()
+	// Box width accounts for the viewport width minus some padding
+	boxWidth := width - 4
+	if boxWidth < 20 {
+		boxWidth = 20
+	}
+
+	var sections []string
+	for _, f := range files {
+		header := fileNameStyle.Render(f.name)
+
+		var body strings.Builder
+		for _, line := range f.lines {
+			if len(line) == 0 {
+				body.WriteString("\n")
+				continue
+			}
+			if strings.HasPrefix(line, "@@") {
+				// Simplify hunk header: just show the @@ ... @@ part
+				body.WriteString(HunkStyle.Render(line) + "\n")
+			} else if line[0] == '+' {
+				body.WriteString(AdditionStyle.Render(line) + "\n")
+			} else if line[0] == '-' {
+				body.WriteString(DeletionStyle.Render(line) + "\n")
+			} else {
+				body.WriteString(line + "\n")
+			}
+		}
+
+		box := fileBoxStyle.Width(boxWidth).Render(
+			lipgloss.JoinVertical(lipgloss.Left, header, body.String()))
+		sections = append(sections, box)
+	}
+
+	return strings.Join(sections, "\n")
 }

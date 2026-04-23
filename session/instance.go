@@ -5,6 +5,7 @@ import (
 	"claude-squad/session/git"
 	"claude-squad/session/tmux"
 	"path/filepath"
+	"regexp"
 
 	"fmt"
 	"os"
@@ -13,6 +14,13 @@ import (
 
 	"github.com/atotto/clipboard"
 )
+
+// resumeRegex matches "claude --resume <id-or-name>" in pane content,
+// with optional quotes around the session identifier.
+var resumeRegex = regexp.MustCompile(`claude --resume "?([^\s"]+)"?`)
+
+// ansiRegex matches ANSI escape sequences.
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 type Status int
 
@@ -51,6 +59,12 @@ type Instance struct {
 	AutoYes bool
 	// Prompt is the initial prompt to pass to the instance on startup
 	Prompt string
+	// OriginalPrompt is a copy of the initial prompt, preserved for display after sending.
+	OriginalPrompt string
+	// LastActiveAt tracks the last time this instance was interacted with or was running.
+	LastActiveAt time.Time
+	// PRURL is the GitHub PR URL for this instance's branch, if one exists.
+	PRURL string
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
@@ -70,16 +84,17 @@ type Instance struct {
 // ToInstanceData converts an Instance to its serializable form
 func (i *Instance) ToInstanceData() InstanceData {
 	data := InstanceData{
-		Title:     i.Title,
-		Path:      i.Path,
-		Branch:    i.Branch,
-		Status:    i.Status,
-		Height:    i.Height,
-		Width:     i.Width,
-		CreatedAt: i.CreatedAt,
-		UpdatedAt: time.Now(),
-		Program:   i.Program,
-		AutoYes:   i.AutoYes,
+		Title:          i.Title,
+		Path:           i.Path,
+		Branch:         i.Branch,
+		Status:         i.Status,
+		Height:         i.Height,
+		Width:          i.Width,
+		CreatedAt:      i.CreatedAt,
+		UpdatedAt:      time.Now(),
+		Program:        i.Program,
+		AutoYes:        i.AutoYes,
+		OriginalPrompt: i.OriginalPrompt,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -109,15 +124,16 @@ func (i *Instance) ToInstanceData() InstanceData {
 // FromInstanceData creates a new Instance from serialized data
 func FromInstanceData(data InstanceData) (*Instance, error) {
 	instance := &Instance{
-		Title:     data.Title,
-		Path:      data.Path,
-		Branch:    data.Branch,
-		Status:    data.Status,
-		Height:    data.Height,
-		Width:     data.Width,
-		CreatedAt: data.CreatedAt,
-		UpdatedAt: data.UpdatedAt,
-		Program:   data.Program,
+		Title:          data.Title,
+		Path:           data.Path,
+		Branch:         data.Branch,
+		Status:         data.Status,
+		Height:         data.Height,
+		Width:          data.Width,
+		CreatedAt:      data.CreatedAt,
+		UpdatedAt:      data.UpdatedAt,
+		Program:        data.Program,
+		OriginalPrompt: data.OriginalPrompt,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,
@@ -162,10 +178,14 @@ type InstanceOptions struct {
 func NewInstance(opts InstanceOptions) (*Instance, error) {
 	t := time.Now()
 
-	// Convert path to absolute
-	absPath, err := filepath.Abs(opts.Path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get absolute path: %w", err)
+	// Convert path to absolute (empty path means repo will be set later via repo picker)
+	absPath := opts.Path
+	if absPath != "" {
+		var err error
+		absPath, err = filepath.Abs(opts.Path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get absolute path: %w", err)
+		}
 	}
 
 	return &Instance{
@@ -177,6 +197,7 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		Width:          0,
 		CreatedAt:      t,
 		UpdatedAt:      t,
+		LastActiveAt:   t,
 		AutoYes:        false,
 		selectedBranch: opts.Branch,
 	}, nil
@@ -189,8 +210,32 @@ func (i *Instance) RepoName() (string, error) {
 	return i.gitWorktree.GetRepoName(), nil
 }
 
+// GetRepoPath returns the repository path for the instance, or empty string if unavailable.
+func (i *Instance) GetRepoPath() string {
+	if i.gitWorktree == nil {
+		return ""
+	}
+	return i.gitWorktree.GetRepoPath()
+}
+
 func (i *Instance) SetStatus(status Status) {
 	i.Status = status
+	if status == Running || status == Loading {
+		i.LastActiveAt = time.Now()
+	}
+}
+
+// TouchActive marks the instance as recently interacted with.
+func (i *Instance) TouchActive() {
+	i.LastActiveAt = time.Now()
+}
+
+// IsIdle returns true if the instance is Ready and hasn't been active for the given duration.
+func (i *Instance) IsIdle(timeout time.Duration) bool {
+	if i.Status != Ready {
+		return false
+	}
+	return time.Since(i.LastActiveAt) > timeout
 }
 
 // SetSelectedBranch sets the branch to use when starting the instance.
@@ -257,7 +302,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 			return setupErr
 		}
 
-		// Create new session
+		// Create new session (starts a plain shell)
 		if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
@@ -266,10 +311,54 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 			setupErr = fmt.Errorf("failed to start new session: %w", err)
 			return setupErr
 		}
+
+		// Wait for the shell to be ready, then send the program command.
+		if err := i.sendProgramToSession(); err != nil {
+			setupErr = fmt.Errorf("failed to send program to session: %w", err)
+			return setupErr
+		}
 	}
 
 	i.SetStatus(Running)
 
+	return nil
+}
+
+// sendProgramToSession waits for the tmux shell to be ready, then sends the program command.
+func (i *Instance) sendProgramToSession() error {
+	if i.Program == "" {
+		return nil
+	}
+
+	timeout := time.After(5 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			log.WarningLog.Printf("timed out waiting for shell, sending program anyway")
+			return i.sendProgramCommand()
+		case <-ticker.C:
+			content, err := i.tmuxSession.CapturePaneContent()
+			if err != nil || len(strings.TrimSpace(content)) == 0 {
+				continue
+			}
+			// Shell has content — it's ready
+			return i.sendProgramCommand()
+		}
+	}
+}
+
+// sendProgramCommand sends the program name as keystrokes to the tmux session.
+func (i *Instance) sendProgramCommand() error {
+	if err := i.tmuxSession.SendKeys(i.Program); err != nil {
+		return fmt.Errorf("error sending program command: %w", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := i.tmuxSession.TapEnter(); err != nil {
+		return fmt.Errorf("error sending enter for program: %w", err)
+	}
 	return nil
 }
 
@@ -330,18 +419,78 @@ func (i *Instance) HasUpdated() (updated bool, hasPrompt bool) {
 	return i.tmuxSession.HasUpdated()
 }
 
-// CheckAndHandleTrustPrompt checks for and dismisses the trust prompt for supported programs.
+// CheckAndHandleResumePrompt checks if Claude exited and left a "Resume this session with:"
+// message. If found, it automatically sends the resume command to restart the session.
+// Returns true if a resume command was detected and sent.
+func (i *Instance) CheckAndHandleResumePrompt() bool {
+	if !i.started || i.tmuxSession == nil {
+		return false
+	}
+	if !strings.HasSuffix(i.Program, "claude") {
+		return false
+	}
+
+	content, err := i.tmuxSession.CapturePaneContent()
+	if err != nil {
+		return false
+	}
+
+	// Strip ANSI escape sequences so the regex doesn't pick up trailing codes (e.g. "m" from \x1b[0m).
+	plain := ansiRegex.ReplaceAllString(content, "")
+
+	if !strings.Contains(plain, "Resume this session with:") {
+		return false
+	}
+
+	match := resumeRegex.FindString(plain)
+	if match == "" {
+		return false
+	}
+
+	log.InfoLog.Printf("detected claude exit with resume command: %s", match)
+	if err := i.tmuxSession.SendKeys(match); err != nil {
+		log.ErrorLog.Printf("failed to send resume command: %v", err)
+		return false
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := i.tmuxSession.TapEnter(); err != nil {
+		log.ErrorLog.Printf("failed to tap enter for resume: %v", err)
+	}
+	return true
+}
+
+// CheckAndHandleTrustPrompt checks for and dismisses trust/approval prompts for supported programs.
+// Returns true if a prompt was found and handled.
 func (i *Instance) CheckAndHandleTrustPrompt() bool {
 	if !i.started || i.tmuxSession == nil {
 		return false
 	}
-	program := i.Program
-	if !strings.HasSuffix(program, tmux.ProgramClaude) &&
-		!strings.HasSuffix(program, tmux.ProgramAider) &&
-		!strings.HasSuffix(program, tmux.ProgramGemini) {
+
+	content, err := i.tmuxSession.CapturePaneContent()
+	if err != nil {
 		return false
 	}
-	return i.tmuxSession.CheckAndHandleTrustPrompt()
+
+	if strings.HasSuffix(i.Program, tmux.ProgramClaude) {
+		if strings.Contains(content, "Do you trust the files in this folder?") ||
+			strings.Contains(content, "new MCP server") ||
+			strings.Contains(content, "Settings requiring approval") {
+			if err := i.tmuxSession.TapEnter(); err != nil {
+				log.ErrorLog.Printf("could not tap enter on trust/MCP/settings screen: %v", err)
+			}
+			return true
+		}
+	} else if strings.HasSuffix(i.Program, tmux.ProgramAider) ||
+		strings.HasSuffix(i.Program, tmux.ProgramGemini) {
+		if strings.Contains(content, "Open documentation url for more info") {
+			if err := i.tmuxSession.TapDAndEnter(); err != nil {
+				log.ErrorLog.Printf("could not tap enter on trust screen: %v", err)
+			}
+			return true
+		}
+	}
+
+	return false
 }
 
 // TapEnter sends an enter key press to the tmux session if AutoYes is enabled.
@@ -588,7 +737,50 @@ func (i *Instance) SendPrompt(prompt string) error {
 		return fmt.Errorf("error tapping enter: %w", err)
 	}
 
+	i.TouchActive()
 	return nil
+}
+
+// SendPromptWhenReady waits for the program to finish initializing, then sends the prompt.
+// It polls the tmux pane content, dismissing trust/approval prompts along the way, then
+// waits for the screen to stabilize before sending. Called from a background goroutine.
+func (i *Instance) SendPromptWhenReady(prompt string) error {
+	if !i.started || i.tmuxSession == nil {
+		return fmt.Errorf("instance not started")
+	}
+
+	timeout := time.After(30 * time.Second)
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	// Phase 1: Wait for the program to show something and dismiss any trust prompts.
+	// Once the pane has content and no trust prompts remain, move to phase 2.
+	for {
+		select {
+		case <-timeout:
+			log.WarningLog.Printf("timed out waiting for program readiness, sending prompt anyway")
+			return i.SendPrompt(prompt)
+		case <-ticker.C:
+			if i.CheckAndHandleTrustPrompt() {
+				continue
+			}
+
+			content, err := i.tmuxSession.CapturePaneContent()
+			if err != nil || len(strings.TrimSpace(content)) == 0 {
+				continue
+			}
+
+			// Pane has content and no trust prompt — program is loaded.
+			// Brief pause for the UI to finish rendering, then send.
+			time.Sleep(500 * time.Millisecond)
+
+			// One final trust prompt check in case another appeared during the pause.
+			i.CheckAndHandleTrustPrompt()
+			time.Sleep(250 * time.Millisecond)
+
+			return i.SendPrompt(prompt)
+		}
+	}
 }
 
 // PreviewFullHistory captures the entire tmux pane output including full scrollback history

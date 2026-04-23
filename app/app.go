@@ -2,6 +2,7 @@ package app
 
 import (
 	"claude-squad/config"
+	"claude-squad/extensions"
 	"claude-squad/keys"
 	"claude-squad/log"
 	"claude-squad/session"
@@ -11,10 +12,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -83,6 +86,15 @@ type home struct {
 	// startingInstance holds a reference to the instance being started in the background.
 	startingInstance *session.Instance
 
+	// cwdIsGitRepo is true if the current working directory is inside a git repository.
+	cwdIsGitRepo bool
+
+	// pendingConfirmAction is the tea.Cmd to run if the user confirms in the confirmation modal.
+	pendingConfirmAction tea.Cmd
+
+	// lastDetectedPRURL tracks the last PR URL detected in the prompt to avoid re-fetching.
+	lastDetectedPRURL string
+
 	// -- UI Components --
 
 	// list displays the list of instances
@@ -101,6 +113,9 @@ type home struct {
 	textOverlay *overlay.TextOverlay
 	// confirmationOverlay displays confirmation modals
 	confirmationOverlay *overlay.ConfirmationOverlay
+
+	// extensionManager runs background extensions against idle instances
+	extensionManager *extensions.ExtensionManager
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -117,6 +132,10 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		os.Exit(1)
 	}
 
+	// Check if CWD is inside a git repo (determines whether repo picker is needed)
+	currentDir, _ := os.Getwd()
+	cwdIsGitRepo := git.IsGitRepo(currentDir)
+
 	h := &home{
 		ctx:          ctx,
 		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot)),
@@ -129,6 +148,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		autoYes:      autoYes,
 		state:        stateDefault,
 		appState:     appState,
+		cwdIsGitRepo: cwdIsGitRepo,
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 
@@ -148,6 +168,12 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		}
 	}
 
+	// Start the extension manager to monitor idle instances in the background.
+	h.extensionManager = extensions.NewExtensionManager(func() []*session.Instance {
+		return h.list.GetInstances()
+	})
+	h.extensionManager.Start()
+
 	return h
 }
 
@@ -160,14 +186,16 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 
 	// Menu takes 10% of height, list and window take 90%
 	contentHeight := int(float32(msg.Height) * 0.9)
-	menuHeight := msg.Height - contentHeight - 1     // minus 1 for error box
-	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
+	errBoxHeight := 3
+	menuHeight := msg.Height - contentHeight - errBoxHeight
+	m.errBox.SetSize(int(float32(msg.Width)*0.9), errBoxHeight)
 
 	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
 	m.list.SetSize(listWidth, contentHeight)
 
 	if m.textInputOverlay != nil {
-		m.textInputOverlay.SetSize(int(float32(msg.Width)*0.6), int(float32(msg.Height)*0.4))
+		overlayHeight := int(float32(msg.Height) * 0.7)
+		m.textInputOverlay.SetSize(int(float32(msg.Width)*0.6), overlayHeight)
 	}
 	if m.textOverlay != nil {
 		m.textOverlay.SetWidth(int(float32(msg.Width) * 0.6))
@@ -237,9 +265,13 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case metadataUpdateDoneMsg:
 		for _, r := range msg.results {
-			if r.updated {
+			// Check if Claude exited with a resume prompt — restart it automatically.
+			if r.instance.CheckAndHandleResumePrompt() {
+				r.instance.SetStatus(session.Running)
+			} else if r.updated {
 				r.instance.SetStatus(session.Running)
 			} else if r.hasPrompt {
+				r.instance.SetStatus(session.Running)
 				r.instance.TapEnter()
 			} else {
 				r.instance.SetStatus(session.Ready)
@@ -286,6 +318,28 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textInputOverlay.SetBranchResults(msg.branches, msg.version)
 		}
 		return m, nil
+	case prBranchResultMsg:
+		if m.textInputOverlay != nil {
+			// Auto-select the repo by name if a repo picker is present
+			if msg.repoName != "" {
+				if m.textInputOverlay.SelectRepoByName(msg.repoName) {
+					// Trigger branch fetch for the newly selected repo
+					repo := m.textInputOverlay.GetSelectedRepo()
+					if repo != "" {
+						fetchCmd := func() tea.Msg {
+							git.FetchBranches(repo)
+							return nil
+						}
+						m.textInputOverlay.SetDefaultBranch(msg.branch)
+						searchCmd := m.runBranchSearch("", m.textInputOverlay.BranchFilterVersion())
+						return m, tea.Batch(fetchCmd, searchCmd)
+					}
+				}
+			}
+			// Set the default branch (will apply when results arrive)
+			m.textInputOverlay.SetDefaultBranch(msg.branch)
+		}
+		return m, nil
 	case tea.KeyMsg:
 		return m.handleKeyPress(msg)
 	case tea.WindowSizeMsg:
@@ -319,12 +373,21 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.menu.SetState(ui.StatePrompt)
 			m.textInputOverlay = m.newPromptOverlay()
 		} else {
-			// If instance has a prompt (set from Shift+N flow), send it now
+			// If instance has a prompt (set from Shift+N flow), send it in the background
+			// after waiting for the program to be ready
 			if msg.instance.Prompt != "" {
-				if err := msg.instance.SendPrompt(msg.instance.Prompt); err != nil {
-					log.ErrorLog.Printf("failed to send prompt: %v", err)
+				inst := msg.instance
+				prompt := inst.Prompt
+				inst.Prompt = ""
+				sendCmd := func() tea.Msg {
+					if err := inst.SendPromptWhenReady(prompt); err != nil {
+						log.ErrorLog.Printf("failed to send prompt: %v", err)
+					}
+					return nil
 				}
-				msg.instance.Prompt = ""
+				m.menu.SetState(ui.StateDefault)
+				m.showHelpScreen(helpStart(msg.instance), nil)
+				return m, tea.Batch(tea.WindowSize(), m.instanceChanged(), sendCmd)
 			}
 			m.menu.SetState(ui.StateDefault)
 			m.showHelpScreen(helpStart(msg.instance), nil)
@@ -340,6 +403,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *home) handleQuit() (tea.Model, tea.Cmd) {
+	if m.extensionManager != nil {
+		m.extensionManager.Stop()
+	}
 	if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
 		return m, m.handleError(err)
 	}
@@ -483,7 +549,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		// Use the new TextInputOverlay component to handle all key events
-		shouldClose, branchFilterChanged := m.textInputOverlay.HandleKeyPress(msg)
+		shouldClose, branchFilterChanged, repoChanged := m.textInputOverlay.HandleKeyPress(msg)
 
 		// Check if the form was submitted or canceled
 		if shouldClose {
@@ -499,17 +565,29 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			if m.textInputOverlay.IsSubmitted() {
 				prompt := m.textInputOverlay.GetValue()
 				selectedBranch := m.textInputOverlay.GetSelectedBranch()
-				selectedProgram := m.textInputOverlay.GetSelectedProgram()
+				selectedRepo := m.textInputOverlay.GetSelectedRepo()
 
 				if !selected.Started() {
+					// Set the repo path from the picker if provided
+					if selectedRepo != "" {
+						if !git.IsGitRepo(selectedRepo) {
+							m.textInputOverlay = nil
+							m.state = stateDefault
+							m.menu.SetState(ui.StateDefault)
+							m.list.Kill()
+							return m, m.handleError(fmt.Errorf("not a git repository: %s", selectedRepo))
+						}
+						selected.Path = selectedRepo
+					}
+
 					// Shift+N flow: instance not started yet — set branch, start, then send prompt
 					if selectedBranch != "" {
 						selected.SetSelectedBranch(selectedBranch)
 					}
-					if selectedProgram != "" {
-						selected.Program = selectedProgram
-					}
 					selected.Prompt = prompt
+					if prompt != "" {
+						selected.OriginalPrompt = prompt
+					}
 
 					// Finalize into list and start
 					selected.SetStatus(session.Loading)
@@ -550,11 +628,30 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			)
 		}
 
+		// When the repo selection changes, fetch branches for the new repo
+		if repoChanged {
+			repo := m.textInputOverlay.GetSelectedRepo()
+			if repo != "" && git.IsGitRepo(repo) {
+				fetchCmd := func() tea.Msg {
+					git.FetchBranches(repo)
+					return nil
+				}
+				searchCmd := m.runBranchSearch("", m.textInputOverlay.BranchFilterVersion())
+				return m, tea.Batch(fetchCmd, searchCmd)
+			}
+			return m, nil
+		}
+
 		// Schedule a debounced branch search if the filter changed
 		if branchFilterChanged {
 			filter := m.textInputOverlay.BranchFilter()
 			version := m.textInputOverlay.BranchFilterVersion()
 			return m, m.scheduleBranchSearch(filter, version)
+		}
+
+		// Check for GitHub PR URLs in the prompt text and auto-select branch/repo
+		if prCmd := m.detectPRURL(); prCmd != nil {
+			return m, prCmd
 		}
 
 		return m, nil
@@ -564,8 +661,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	if m.state == stateConfirm {
 		shouldClose := m.confirmationOverlay.HandleKeyPress(msg)
 		if shouldClose {
+			action := m.pendingConfirmAction
+			m.pendingConfirmAction = nil
 			m.state = stateDefault
 			m.confirmationOverlay = nil
+			if action != nil {
+				// Run the confirmed action as a background tea.Cmd
+				return m, action
+			}
 			return m, nil
 		}
 		return m, nil
@@ -605,22 +708,50 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	switch name {
 	case keys.KeyHelp:
 		return m.showHelpScreen(helpTypeGeneral{}, nil)
+	case keys.KeyInfo:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil {
+			return m, nil
+		}
+		return m, m.showInstanceInfo(selected)
+	case keys.KeyReview:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || !selected.Started() || selected.Paused() {
+			return m, nil
+		}
+		reviewCmd := func() tea.Msg {
+			prompt := "Run the pr-reviewer subagent on this PR, act on any of its feedback."
+			if err := selected.SendPrompt(prompt); err != nil {
+				log.ErrorLog.Printf("failed to send review prompt: %v", err)
+			}
+			return nil
+		}
+		return m, reviewCmd
 	case keys.KeyPrompt:
 		if m.list.NumInstances() >= GlobalInstanceLimit {
 			return m, m.handleError(
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
 
-		// Start a background fetch so branches are up to date by the time the picker opens
-		fetchCmd := func() tea.Msg {
-			currentDir, _ := os.Getwd()
-			git.FetchBranches(currentDir)
-			return nil
+		// Only fetch branches in the background if CWD is a git repo
+		var fetchCmd tea.Cmd
+		if m.cwdIsGitRepo {
+			fetchCmd = func() tea.Msg {
+				currentDir, _ := os.Getwd()
+				git.FetchBranches(currentDir)
+				return nil
+			}
+		}
+
+		// Use CWD as path when in a git repo, empty string otherwise (set via repo picker)
+		instancePath := "."
+		if !m.cwdIsGitRepo {
+			instancePath = ""
 		}
 
 		instance, err := session.NewInstance(session.InstanceOptions{
 			Title:   "",
-			Path:    ".",
+			Path:    instancePath,
 			Program: m.program,
 		})
 		if err != nil {
@@ -639,9 +770,16 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
+
+		// Use CWD as path when in a git repo, empty string otherwise (set via repo picker)
+		instancePath := "."
+		if !m.cwdIsGitRepo {
+			instancePath = ""
+		}
+
 		instance, err := session.NewInstance(session.InstanceOptions{
 			Title:   "",
-			Path:    ".",
+			Path:    instancePath,
 			Program: m.program,
 		})
 		if err != nil {
@@ -653,13 +791,18 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.state = stateNew
 		m.menu.SetState(ui.StateNewInstance)
 
+		// When not in a git repo, force the prompt overlay flow so the repo picker appears
+		if !m.cwdIsGitRepo {
+			m.promptAfterName = true
+		}
+
 		return m, nil
 	case keys.KeyUp:
 		m.list.Up()
-		return m, m.instanceChanged()
+		return m, tea.Batch(m.instanceChanged(), tea.WindowSize())
 	case keys.KeyDown:
 		m.list.Down()
-		return m, m.instanceChanged()
+		return m, tea.Batch(m.instanceChanged(), tea.WindowSize())
 	case keys.KeyShiftUp:
 		m.tabbedWindow.ScrollUp()
 		return m, m.instanceChanged()
@@ -857,6 +1000,12 @@ type branchSearchResultMsg struct {
 	version  uint64
 }
 
+// prBranchResultMsg carries the branch name extracted from a GitHub PR URL.
+type prBranchResultMsg struct {
+	repoName string
+	branch   string
+}
+
 const branchSearchDebounce = 150 * time.Millisecond
 
 // scheduleBranchSearch returns a debounced tea.Cmd: sleeps, then triggers a search message.
@@ -867,11 +1016,23 @@ func (m *home) scheduleBranchSearch(filter string, version uint64) tea.Cmd {
 	}
 }
 
+// getActiveBranchSearchRepo returns the repo path to use for branch searches.
+// Prefers the repo selected in the overlay, falls back to CWD.
+func (m *home) getActiveBranchSearchRepo() string {
+	if m.textInputOverlay != nil {
+		if repo := m.textInputOverlay.GetSelectedRepo(); repo != "" {
+			return repo
+		}
+	}
+	dir, _ := os.Getwd()
+	return dir
+}
+
 // runBranchSearch returns a tea.Cmd that performs the git search in the background.
 func (m *home) runBranchSearch(filter string, version uint64) tea.Cmd {
+	repo := m.getActiveBranchSearchRepo()
 	return func() tea.Msg {
-		currentDir, _ := os.Getwd()
-		branches, err := git.SearchBranches(currentDir, filter)
+		branches, err := git.SearchBranches(repo, filter)
 		if err != nil {
 			log.WarningLog.Printf("branch search failed: %v", err)
 			return nil
@@ -961,15 +1122,120 @@ func (m *home) handleError(err error) tea.Cmd {
 	return func() tea.Msg {
 		select {
 		case <-m.ctx.Done():
-		case <-time.After(3 * time.Second):
+		case <-time.After(30 * time.Second):
 		}
 
 		return hideErrMsg{}
 	}
 }
 
+// showInstanceInfo displays a read-only overlay with the instance's original configuration.
+func (m *home) showInstanceInfo(inst *session.Instance) tea.Cmd {
+	labelStyle := lipgloss.NewStyle().Bold(true)
+	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Bold(true)
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	var content string
+
+	content += headerStyle.Render("Session Info") + "\n\n"
+
+	content += labelStyle.Render("Title: ") + inst.Title + "\n"
+	content += labelStyle.Render("Program: ") + inst.Program + "\n"
+	content += labelStyle.Render("Branch: ") + inst.Branch + "\n"
+
+	repoPath := inst.GetRepoPath()
+	if repoPath == "" {
+		repoPath = inst.Path
+	}
+	content += labelStyle.Render("Repository: ") + repoPath + "\n"
+	content += labelStyle.Render("Created: ") + inst.CreatedAt.Format("2006-01-02 15:04:05") + "\n"
+
+	if inst.OriginalPrompt != "" {
+		content += "\n" + headerStyle.Render("Original Prompt") + "\n\n"
+		content += inst.OriginalPrompt
+	}
+
+	content += "\n\n" + hintStyle.Render("y copy prompt  esc close")
+
+	m.textOverlay = overlay.NewTextOverlay(content)
+	if inst.OriginalPrompt != "" {
+		prompt := inst.OriginalPrompt
+		m.textOverlay.OnCopy = func() {
+			_ = clipboard.WriteAll(prompt)
+		}
+	}
+	m.state = stateHelp
+
+	return tea.WindowSize()
+}
+
+// detectPRURL checks the prompt text for a GitHub PR URL and triggers a background
+// fetch of the PR's branch name. Returns nil if no new PR URL was detected.
+func (m *home) detectPRURL() tea.Cmd {
+	if m.textInputOverlay == nil {
+		return nil
+	}
+	promptText := m.textInputOverlay.GetValue()
+	prInfo := git.ParsePRURL(promptText)
+	if prInfo == nil {
+		return nil
+	}
+	// Skip if we already processed this URL
+	if prInfo.URL == m.lastDetectedPRURL {
+		return nil
+	}
+	m.lastDetectedPRURL = prInfo.URL
+
+	prURL := prInfo.URL
+	repoName := prInfo.Repo
+	return func() tea.Msg {
+		branch, err := git.GetPRBranch(prURL)
+		if err != nil {
+			log.WarningLog.Printf("failed to get PR branch: %v", err)
+			return nil
+		}
+		return prBranchResultMsg{repoName: repoName, branch: branch}
+	}
+}
+
 func (m *home) newPromptOverlay() *overlay.TextInputOverlay {
-	return overlay.NewTextInputOverlayWithBranchPicker("Enter prompt", "", m.appConfig.GetProfiles())
+	m.lastDetectedPRURL = ""
+	if !m.cwdIsGitRepo {
+		return overlay.NewTextInputOverlayWithRepoAndBranchPicker(
+			"Enter prompt", "", m.getAvailableRepos())
+	}
+	return overlay.NewTextInputOverlayWithBranchPicker("Enter prompt", "")
+}
+
+// getAvailableRepos returns repo paths for the repo picker.
+// It discovers git repos under ~/repos and merges in repo paths from existing instances,
+// with repos already used by instances sorted first.
+func (m *home) getAvailableRepos() []string {
+	seen := make(map[string]bool)
+
+	// Collect repos from existing instances first (these are prioritized)
+	var recentRepos []string
+	for _, inst := range m.list.GetInstances() {
+		repoPath := inst.GetRepoPath()
+		if repoPath != "" && !seen[repoPath] {
+			seen[repoPath] = true
+			recentRepos = append(recentRepos, repoPath)
+		}
+	}
+
+	// Discover repos under ~/repos
+	home, err := os.UserHomeDir()
+	if err == nil {
+		discovered := overlay.DiscoverRepos(filepath.Join(home, "repos"))
+		for _, repo := range discovered {
+			if !seen[repo] {
+				seen[repo] = true
+				recentRepos = append(recentRepos, repo)
+			}
+		}
+	}
+
+	return recentRepos
 }
 
 // cancelPromptOverlay cancels the prompt overlay, cleaning up unstarted instances.
@@ -989,26 +1255,22 @@ func (m *home) cancelPromptOverlay() tea.Cmd {
 	)
 }
 
-// confirmAction shows a confirmation modal and stores the action to execute on confirm
+// confirmAction shows a confirmation modal and stores the action to execute on confirm.
+// The action runs as a background tea.Cmd when the user confirms, keeping the UI responsive.
 func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	m.state = stateConfirm
+	m.pendingConfirmAction = action
 
 	// Create and show the confirmation overlay using ConfirmationOverlay
 	m.confirmationOverlay = overlay.NewConfirmationOverlay(message)
 	// Set a fixed width for consistent appearance
 	m.confirmationOverlay.SetWidth(50)
 
-	// Set callbacks for confirmation and cancellation
 	m.confirmationOverlay.OnConfirm = func() {
-		m.state = stateDefault
-		// Execute the action if it exists
-		if action != nil {
-			_ = action()
-		}
+		// Action is dispatched from the stateConfirm handler, not here
 	}
-
 	m.confirmationOverlay.OnCancel = func() {
-		m.state = stateDefault
+		m.pendingConfirmAction = nil
 	}
 
 	return nil

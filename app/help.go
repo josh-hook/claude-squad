@@ -158,7 +158,9 @@ func (m *home) showHelpScreen(helpType helpText, onDismiss func()) (tea.Model, t
 	if onDismiss != nil {
 		onDismiss()
 	}
-	return m, nil
+	// Force a full repaint — the callback may have blocked (e.g. attach/detach)
+	// and left the terminal in a dirty state.
+	return m, tea.WindowSize()
 }
 
 // handleHelpState handles key events when in help state

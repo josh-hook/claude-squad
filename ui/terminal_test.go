@@ -25,8 +25,12 @@ func newMockTmuxSession(t *testing.T, name string, cmdExec cmd_test.MockCmdExec)
 	return tmux.NewTmuxSessionWithDeps(name, "bash", ptyFactory, cmdExec)
 }
 
+// preamble is prepended to mock capture-pane output to simulate the shell
+// startup lines that get stripped by stripPreamble.
+const preamble = "preamble-1\npreamble-2\npreamble-3\n"
+
 // mockCmdExec returns a MockCmdExec that simulates a working tmux session.
-// captureContent is returned for capture-pane commands.
+// captureContent is returned for capture-pane commands (preamble is prepended automatically).
 func mockCmdExec(captureContent string, sessionExists bool) cmd_test.MockCmdExec {
 	return cmd_test.MockCmdExec{
 		RunFunc: func(cmd *exec.Cmd) error {
@@ -48,7 +52,7 @@ func mockCmdExec(captureContent string, sessionExists bool) cmd_test.MockCmdExec
 		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
 			cmdStr := cmd.String()
 			if strings.Contains(cmdStr, "capture-pane") {
-				return []byte(captureContent), nil
+				return []byte(preamble + captureContent), nil
 			}
 			return []byte(""), nil
 		},

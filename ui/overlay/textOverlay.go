@@ -11,6 +11,8 @@ type TextOverlay struct {
 	Dismissed bool
 	// Callback function to be called when the overlay is dismissed
 	OnDismiss func()
+	// OnCopy is called when the user presses 'y' to copy content
+	OnCopy func()
 	// Content to display in the overlay
 	content string
 
@@ -25,16 +27,33 @@ func NewTextOverlay(content string) *TextOverlay {
 	}
 }
 
-// HandleKeyPress processes a key press and updates the state
-// Returns true if the overlay should be closed
+// HandleKeyPress processes a key press and updates the state.
+// Returns true if the overlay should be closed. Closes on Esc or q.
+// 'y' triggers the OnCopy callback without closing.
 func (t *TextOverlay) HandleKeyPress(msg tea.KeyMsg) bool {
-	// Close on any key
-	t.Dismissed = true
-	// Call the OnDismiss callback if it exists
-	if t.OnDismiss != nil {
-		t.OnDismiss()
+	switch msg.Type {
+	case tea.KeyEscape:
+		t.Dismissed = true
+		if t.OnDismiss != nil {
+			t.OnDismiss()
+		}
+		return true
+	default:
+		switch msg.String() {
+		case "q":
+			t.Dismissed = true
+			if t.OnDismiss != nil {
+				t.OnDismiss()
+			}
+			return true
+		case "y":
+			if t.OnCopy != nil {
+				t.OnCopy()
+			}
+			return false
+		}
+		return false
 	}
-	return true
 }
 
 // Render renders the text overlay

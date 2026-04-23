@@ -2,6 +2,7 @@ package git
 
 import (
 	"claude-squad/log"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,26 +22,68 @@ func (g *GitWorktree) Setup() error {
 		return err
 	}
 
+	// Fetch the default branch so diffs are computed against the latest main/master.
+	defaultBranch := FindDefaultBranch(g.repoPath)
+	fetchCmd := exec.Command("git", "-C", g.repoPath, "fetch", "origin", defaultBranch)
+	if err := fetchCmd.Run(); err != nil {
+		log.WarningLog.Printf("failed to fetch %s: %v (continuing anyway)", defaultBranch, err)
+	}
+
 	// If this worktree uses a pre-existing branch, always set up from that branch
 	// (it may exist locally or only on the remote).
 	if g.isExistingBranch {
-		return g.setupFromExistingBranch()
+		if err := g.setupFromExistingBranch(); err != nil {
+			return err
+		}
+	} else {
+		// Check if branch exists using git CLI (much faster than go-git PlainOpen)
+		_, err = g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", g.branchName))
+		if err == nil {
+			if err := g.setupFromExistingBranch(); err != nil {
+				return err
+			}
+		} else {
+			if err := g.setupNewWorktree(); err != nil {
+				return err
+			}
+		}
 	}
 
-	// Check if branch exists using git CLI (much faster than go-git PlainOpen)
-	_, err = g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", g.branchName))
-	if err == nil {
-		return g.setupFromExistingBranch()
+	// Set baseCommitSHA to the merge-base between the worktree branch and origin/main.
+	// This gives a PR-style diff: only the changes on the branch, not changes on main
+	// since the branch was created.
+	if g.baseCommitSHA == "" {
+		originRef := fmt.Sprintf("origin/%s", defaultBranch)
+		if sha, err := g.runGitCommand(g.worktreePath, "merge-base", originRef, "HEAD"); err == nil {
+			g.baseCommitSHA = strings.TrimSpace(sha)
+		} else if sha, err := g.runGitCommand(g.repoPath, "rev-parse", originRef); err == nil {
+			// Fallback: use origin/main directly if merge-base fails
+			g.baseCommitSHA = strings.TrimSpace(sha)
+		}
 	}
-	return g.setupNewWorktree()
+
+	// Create .claude/settings.local.json so Claude Code trusts this worktree
+	if err := g.writeClaudeSettings(); err != nil {
+		log.WarningLog.Printf("failed to write claude settings to worktree: %v", err)
+	}
+
+	return nil
 }
 
-// setupFromExistingBranch creates a worktree from an existing branch
+// setupFromExistingBranch creates a worktree from an existing branch.
+// If the worktree already exists on disk, it is reused.
 func (g *GitWorktree) setupFromExistingBranch() error {
-	// Directory already created in Setup(), skip duplicate creation
+	// If the worktree directory already exists, reuse it.
+	if info, err := os.Stat(g.worktreePath); err == nil && info.IsDir() {
+		log.InfoLog.Printf("worktree already exists at %s, reusing", g.worktreePath)
+		return nil
+	}
 
-	// Clean up any existing worktree first
-	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath) // Ignore error if worktree doesn't exist
+	// Prune stale worktree references and remove any existing worktree using this branch.
+	// This handles the case where a previous session created a worktree at a different
+	// path (e.g. with a different timestamp suffix) that still holds the branch.
+	_, _ = g.runGitCommand(g.repoPath, "worktree", "prune")
+	g.removeWorktreeForBranch()
 
 	// Check if the local branch exists
 	_, localErr := g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", g.branchName))
@@ -65,13 +108,44 @@ func (g *GitWorktree) setupFromExistingBranch() error {
 	return nil
 }
 
-// setupNewWorktree creates a new worktree from HEAD
+// removeWorktreeForBranch finds and force-removes any existing worktree that has this branch checked out.
+func (g *GitWorktree) removeWorktreeForBranch() {
+	output, err := g.runGitCommand(g.repoPath, "worktree", "list", "--porcelain")
+	if err != nil {
+		return
+	}
+
+	// Parse porcelain output to find the worktree using our branch.
+	// Format: "worktree <path>\nHEAD <sha>\nbranch refs/heads/<name>\n\n"
+	branchRef := fmt.Sprintf("refs/heads/%s", g.branchName)
+	var currentPath string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			currentPath = strings.TrimPrefix(line, "worktree ")
+		} else if strings.HasPrefix(line, "branch ") {
+			ref := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
+			if ref == branchRef && currentPath != "" && currentPath != g.worktreePath {
+				log.InfoLog.Printf("removing old worktree at %s that holds branch %s", currentPath, g.branchName)
+				_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", currentPath)
+			}
+		}
+	}
+}
+
+// setupNewWorktree creates a new worktree from HEAD.
+// If the worktree already exists on disk, it is reused.
 func (g *GitWorktree) setupNewWorktree() error {
-	// Clean up any existing worktree first
-	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath) // Ignore error if worktree doesn't exist
+	// If the worktree directory already exists, reuse it.
+	if info, err := os.Stat(g.worktreePath); err == nil && info.IsDir() {
+		log.InfoLog.Printf("worktree already exists at %s, reusing", g.worktreePath)
+		return nil
+	}
+
+	// Clean up any stale worktree reference
+	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath)
 
 	// Clean up any existing branch using git CLI (much faster than go-git PlainOpen)
-	_, _ = g.runGitCommand(g.repoPath, "branch", "-D", g.branchName) // Ignore error if branch doesn't exist
+	_, _ = g.runGitCommand(g.repoPath, "branch", "-D", g.branchName)
 
 	output, err := g.runGitCommand(g.repoPath, "rev-parse", "HEAD")
 	if err != nil {
@@ -83,7 +157,6 @@ func (g *GitWorktree) setupNewWorktree() error {
 		return fmt.Errorf("failed to get HEAD commit hash: %w", err)
 	}
 	headCommit := strings.TrimSpace(string(output))
-	g.baseCommitSHA = headCommit
 
 	// Create a new worktree from the HEAD commit
 	// Otherwise, we'll inherit uncommitted changes from the previous worktree.
@@ -91,6 +164,45 @@ func (g *GitWorktree) setupNewWorktree() error {
 	// TODO: we might want to give an option to use main/master instead of the current branch.
 	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, headCommit); err != nil {
 		return fmt.Errorf("failed to create worktree from commit %s: %w", headCommit, err)
+	}
+
+	return nil
+}
+
+// writeClaudeSettings creates a .claude/settings.local.json in the worktree
+// so that Claude Code trusts the directory and allows edits without prompting.
+func (g *GitWorktree) writeClaudeSettings() error {
+	claudeDir := filepath.Join(g.worktreePath, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		return fmt.Errorf("failed to create .claude directory: %w", err)
+	}
+
+	settings := map[string]interface{}{
+		"permissions": map[string]interface{}{
+			"allow": []string{
+				"Edit",
+				"Write",
+				"Bash(git add:*)",
+				"Bash(git commit:*)",
+				"Bash(git diff:*)",
+				"Bash(git log:*)",
+				"Bash(git status:*)",
+				"Bash(git push:*)",
+				"Bash(git checkout:*)",
+				"Bash(git branch:*)",
+			},
+			"deny": []string{},
+		},
+	}
+
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal claude settings: %w", err)
+	}
+
+	settingsPath := filepath.Join(claudeDir, "settings.local.json")
+	if err := os.WriteFile(settingsPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write claude settings: %w", err)
 	}
 
 	return nil

@@ -25,6 +25,8 @@ const (
 	KeyPrompt // New key for entering a prompt
 	KeyHelp   // Key for showing help screen
 
+	KeyInfo // Key for showing instance info
+
 	// Diff keybindings
 	KeyShiftUp
 	KeyShiftDown
@@ -49,6 +51,8 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"r":          KeyResume,
 	"p":          KeySubmit,
 	"?":          KeyHelp,
+	"i":          KeyInfo,
+	"ctrl+r":     KeyReview,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -108,6 +112,14 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyResume: key.NewBinding(
 		key.WithKeys("r"),
 		key.WithHelp("r", "resume"),
+	),
+	KeyInfo: key.NewBinding(
+		key.WithKeys("i"),
+		key.WithHelp("i", "info"),
+	),
+	KeyReview: key.NewBinding(
+		key.WithKeys("ctrl+r"),
+		key.WithHelp("ctrl+r", "review"),
 	),
 
 	// -- Special keybindings --

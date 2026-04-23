@@ -19,10 +19,12 @@ import (
 	"github.com/creack/pty"
 )
 
-const ProgramClaude = "claude"
-
-const ProgramAider = "aider"
-const ProgramGemini = "gemini"
+const (
+	ProgramClaude      = "claude"
+	ProgramAider       = "aider"
+	ProgramGemini      = "gemini"
+	shellPreambleLines = 3
+)
 
 // TmuxSession represents a managed tmux session
 type TmuxSession struct {
@@ -94,8 +96,10 @@ func (t *TmuxSession) Start(workDir string) error {
 		return fmt.Errorf("tmux session already exists: %s", t.sanitizedName)
 	}
 
-	// Create a new detached tmux session and start claude in it
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", t.sanitizedName, "-c", workDir, t.program)
+	// Create a new detached tmux session with a plain shell.
+	// The program is sent as keystrokes after the session starts,
+	// so the session survives if the program exits.
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", t.sanitizedName, "-c", workDir)
 
 	ptmx, err := t.ptyFactory.Start(cmd)
 	if err != nil {
@@ -150,33 +154,6 @@ func (t *TmuxSession) Start(workDir string) error {
 	}
 
 	return nil
-}
-
-// CheckAndHandleTrustPrompt checks the pane content once for a trust prompt and dismisses it if found.
-// Returns true if the prompt was found and handled.
-func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
-	content, err := t.CapturePaneContent()
-	if err != nil {
-		return false
-	}
-
-	if strings.HasSuffix(t.program, ProgramClaude) {
-		if strings.Contains(content, "Do you trust the files in this folder?") ||
-			strings.Contains(content, "new MCP server") {
-			if err := t.TapEnter(); err != nil {
-				log.ErrorLog.Printf("could not tap enter on trust/MCP screen: %v", err)
-			}
-			return true
-		}
-	} else {
-		if strings.Contains(content, "Open documentation url for more info") {
-			if err := t.TapDAndEnter(); err != nil {
-				log.ErrorLog.Printf("could not tap enter on trust screen: %v", err)
-			}
-			return true
-		}
-	}
-	return false
 }
 
 // Restore attaches to an existing session and restores the window size
@@ -461,27 +438,36 @@ func (t *TmuxSession) DoesSessionExist() bool {
 	return t.cmdExec.Run(existsCmd) == nil
 }
 
-// CapturePaneContent captures the content of the tmux pane
+// stripPreamble removes the first shellPreambleLines lines from the output
+// to hide the shell startup lines that appear because we launch programs via keystrokes.
+func stripPreamble(s string) string {
+	lines := strings.SplitN(s, "\n", shellPreambleLines+1)
+	if len(lines) <= shellPreambleLines {
+		return ""
+	}
+	return lines[shellPreambleLines]
+}
+
+// CapturePaneContent captures the content of the tmux pane, stripping shell preamble lines.
 func (t *TmuxSession) CapturePaneContent() (string, error) {
-	// Add -e flag to preserve escape sequences (ANSI color codes)
 	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("error capturing pane content: %v", err)
 	}
-	return string(output), nil
+	return stripPreamble(string(output)), nil
 }
 
-// CapturePaneContentWithOptions captures the pane content with additional options
+// CapturePaneContentWithOptions captures the pane content with additional options,
+// stripping shell preamble lines.
 // start and end specify the starting and ending line numbers (use "-" for the start/end of history)
 func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, error) {
-	// Add -e flag to preserve escape sequences (ANSI color codes)
 	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.sanitizedName)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to capture tmux pane content with options: %v", err)
 	}
-	return string(output), nil
+	return stripPreamble(string(output)), nil
 }
 
 // CleanupSessions kills all tmux sessions that start with "session-"
